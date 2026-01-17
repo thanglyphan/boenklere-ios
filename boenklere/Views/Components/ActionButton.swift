@@ -7,7 +7,7 @@ struct BoenklereActionButtonLabel: View {
     var horizontalPadding: CGFloat = 18
     var isFullWidth: Bool = true
     var textColor: Color = Color(red: 0.07, green: 0.34, blue: 0.68)
-    var fillColor: Color = Color(red: 0.88, green: 0.95, blue: 1.0)
+    var fillColor: Color = Color(red: 0.82, green: 0.92, blue: 1.0)
 
     var body: some View {
         HStack(spacing: 12) {

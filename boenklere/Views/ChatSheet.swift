@@ -19,69 +19,74 @@ struct ChatSheet: View {
     @State private var didMarkRead = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            ChatHeader(
-                title: listing.title,
-                isModalStyle: isModalStyle
-            ) {
-                dismiss()
-            }
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+                .ignoresSafeArea(.keyboard, edges: .bottom)
 
-            ListingRow(listing: listing, userLocation: nil) {
-                showListingSheet = true
-            }
-
-            Divider()
-                .padding(.leading, 76)
-
-            if !authManager.isAuthenticated {
-                VStack(spacing: 12) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 28))
-                        .foregroundColor(.secondary)
-                    Text("Logg inn for å sende meldinger")
-                        .foregroundColor(.secondary)
+            VStack(spacing: 0) {
+                ChatHeader(
+                    title: listing.title,
+                    isModalStyle: isModalStyle
+                ) {
+                    dismiss()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(messageRows) { row in
-                                MessageBubble(
-                                    message: row.message,
-                                    isOutgoing: row.isOutgoing,
-                                    avatarName: row.isOutgoing ? nil : displayUserName,
-                                    showsAvatar: row.showAvatar,
-                                    showsTimestamp: row.showTimestamp,
-                                    isGroupedWithPrevious: row.isGroupedWithPrevious,
-                                    isGroupedWithNext: row.isGroupedWithNext,
-                                    topSpacing: row.topSpacing,
-                                    onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
-                                )
-                                .id(row.message.id)
+
+                ListingRow(listing: listing, userLocation: nil) {
+                    showListingSheet = true
+                }
+
+                Divider()
+                    .padding(.leading, 76)
+
+                if !authManager.isAuthenticated {
+                    VStack(spacing: 12) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.secondary)
+                        Text("Logg inn for å sende meldinger")
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(messageRows) { row in
+                                    MessageBubble(
+                                        message: row.message,
+                                        isOutgoing: row.isOutgoing,
+                                        avatarName: row.isOutgoing ? nil : displayUserName,
+                                        showsAvatar: row.showAvatar,
+                                        showsTimestamp: row.showTimestamp,
+                                        isGroupedWithPrevious: row.isGroupedWithPrevious,
+                                        isGroupedWithNext: row.isGroupedWithNext,
+                                        topSpacing: row.topSpacing,
+                                        onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
+                                    )
+                                    .id(row.message.id)
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.top, 12)
+                        }
+                        .scrollDismissesKeyboard(.interactively)
+                        .background(Color(.systemGroupedBackground))
+                        .onChange(of: messages.count) { _, _ in
+                            if let lastId = messages.last?.id {
+                                withAnimation {
+                                    proxy.scrollTo(lastId, anchor: .bottom)
+                                }
                             }
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.top, 12)
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .background(Color(.systemGroupedBackground))
-                    .onChange(of: messages.count) { _, _ in
-                        if let lastId = messages.last?.id {
-                            withAnimation {
-                                proxy.scrollTo(lastId, anchor: .bottom)
-                            }
-                        }
                     }
                 }
-            }
 
-            if authManager.isAuthenticated {
-                inputBar
+                if authManager.isAuthenticated {
+                    inputBar
+                }
             }
         }
-        .background(Color(.systemGroupedBackground).ignoresSafeArea(.keyboard, edges: .bottom))
         .toolbar(.hidden, for: .navigationBar)
         .task {
             await startConversation()
@@ -1153,77 +1158,82 @@ struct ConversationChatSheet: View {
     @State private var didMarkRead = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            ChatHeader(
-                title: conversation.listingTitle,
-                isModalStyle: isModalStyle
-            ) {
-                dismiss()
-            }
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+                .ignoresSafeArea(.keyboard, edges: .bottom)
 
-            if let listing {
-                ListingRow(listing: listing, userLocation: nil) {
-                    showListingSheet = true
+            VStack(spacing: 0) {
+                ChatHeader(
+                    title: conversation.listingTitle,
+                    isModalStyle: isModalStyle
+                ) {
+                    dismiss()
                 }
 
-                Divider()
-                    .padding(.leading, 76)
-            } else if isLoadingListing {
-                ProgressView()
-                    .padding(.vertical, 8)
-            }
+                if let listing {
+                    ListingRow(listing: listing, userLocation: nil) {
+                        showListingSheet = true
+                    }
 
-            if !authManager.isAuthenticated {
-                VStack(spacing: 12) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 28))
-                        .foregroundColor(.secondary)
-                    Text("Logg inn for å sende meldinger")
-                        .foregroundColor(.secondary)
+                    Divider()
+                        .padding(.leading, 76)
+                } else if isLoadingListing {
+                    ProgressView()
+                        .padding(.vertical, 8)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(messageRows) { row in
-                                if row.message.id == firstUnreadMessageId {
-                                    NewMessagePill()
+
+                if !authManager.isAuthenticated {
+                    VStack(spacing: 12) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.secondary)
+                        Text("Logg inn for å sende meldinger")
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(messageRows) { row in
+                                    if row.message.id == firstUnreadMessageId {
+                                        NewMessagePill()
+                                    }
+                                    MessageBubble(
+                                        message: row.message,
+                                        isOutgoing: row.isOutgoing,
+                                        avatarName: row.isOutgoing ? nil : displayOtherName,
+                                        showsAvatar: row.showAvatar,
+                                        showsTimestamp: row.showTimestamp,
+                                        isGroupedWithPrevious: row.isGroupedWithPrevious,
+                                        isGroupedWithNext: row.isGroupedWithNext,
+                                        topSpacing: row.topSpacing,
+                                        onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
+                                    )
+                                    .id(row.message.id)
                                 }
-                                MessageBubble(
-                                    message: row.message,
-                                    isOutgoing: row.isOutgoing,
-                                    avatarName: row.isOutgoing ? nil : displayOtherName,
-                                    showsAvatar: row.showAvatar,
-                                    showsTimestamp: row.showTimestamp,
-                                    isGroupedWithPrevious: row.isGroupedWithPrevious,
-                                    isGroupedWithNext: row.isGroupedWithNext,
-                                    topSpacing: row.topSpacing,
-                                    onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
-                                )
-                                .id(row.message.id)
                             }
+                            .padding(.horizontal, 14)
+                            .padding(.top, 12)
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.top, 12)
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .background(Color(.systemGroupedBackground))
-                    .onChange(of: messages.count) { _, _ in
-                        if let lastId = messages.last?.id {
-                            withAnimation {
-                                proxy.scrollTo(lastId, anchor: .bottom)
+                        .scrollDismissesKeyboard(.interactively)
+                        .background(Color(.systemGroupedBackground))
+                        .onChange(of: messages.count) { _, _ in
+                            if let lastId = messages.last?.id {
+                                withAnimation {
+                                    proxy.scrollTo(lastId, anchor: .bottom)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if authManager.isAuthenticated {
-                inputBar
+                if authManager.isAuthenticated {
+                    inputBar
+                }
             }
         }
-        .background(Color(.systemGroupedBackground).ignoresSafeArea(.keyboard, edges: .bottom))
         .toolbar(.hidden, for: .navigationBar)
         .task {
             await loadMessages()

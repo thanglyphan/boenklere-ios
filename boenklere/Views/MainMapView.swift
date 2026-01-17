@@ -184,12 +184,12 @@ struct MainMapView: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.primary)
                 .frame(width: 44, height: 44)
-                .background(.regularMaterial, in: Circle())
+                .background(.ultraThinMaterial, in: Circle())
                 .overlay(
                     Circle()
-                        .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                        .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
                 )
-                .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 6)
+                
         }
         .buttonStyle(.plain)
     }
@@ -240,12 +240,12 @@ struct MainMapView: View {
             .buttonStyle(.plain)
         }
         .padding(6)
-        .background(.regularMaterial, in: Capsule())
+        .background(.ultraThinMaterial, in: Capsule())
         .overlay(
             Capsule()
-                .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
         )
-        .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 6)
+        
     }
 
     private func centerOnUser() {
@@ -2012,13 +2012,25 @@ struct MyListingsSheet: View {
     @State private var deletingListingIds: Set<Int64> = []
     @State private var pendingDeleteId: Int64?
     @State private var showDeleteConfirm = false
+    @State private var selectedFilter: ListingFilter = .ongoing
 
     var body: some View {
         VStack(spacing: 0) {
             sheetHeader
 
+            Picker("Filter", selection: $selectedFilter) {
+                Text("Pågående").tag(ListingFilter.ongoing)
+                Text("Utførte").tag(ListingFilter.completed)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.top, 6)
+
             ScrollView {
                 VStack(spacing: 12) {
+                    let visibleListings = filteredListings
+                    let emptyStateText = listings.isEmpty ? "Ingen annonser enda" : (selectedFilter == .completed ? "Ingen utførte annonser" : "Ingen pågående annonser")
+
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.caption)
@@ -2029,12 +2041,12 @@ struct MyListingsSheet: View {
                     if isLoading && listings.isEmpty {
                         ProgressView()
                             .padding(.top, 12)
-                    } else if listings.isEmpty {
+                    } else if visibleListings.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "tray")
                                 .font(.system(size: 36))
                                 .foregroundColor(.secondary)
-                            Text("Ingen annonser enda")
+                            Text(emptyStateText)
                                 .font(.headline)
                                 .foregroundColor(.secondary)
                         }
@@ -2042,7 +2054,7 @@ struct MyListingsSheet: View {
                         .padding(.horizontal, 20)
                     } else {
                         LazyVStack(spacing: 0) {
-                            ForEach(listings, id: \.id) { listing in
+                            ForEach(visibleListings, id: \.id) { listing in
                                 ListingRow(listing: listing, userLocation: nil) {
                                     selectedListing = listing
                                 }
@@ -2058,7 +2070,7 @@ struct MyListingsSheet: View {
                                 }
                                 .opacity(deletingListingIds.contains(listing.id ?? -1) ? 0.6 : 1)
 
-                                if listing.id != listings.last?.id {
+                                if listing.id != visibleListings.last?.id {
                                     Divider()
                                         .padding(.leading, 76)
                                 }
@@ -2105,6 +2117,20 @@ struct MyListingsSheet: View {
         .toolbar(.hidden, for: .navigationBar)
         .task {
             await loadListings()
+        }
+    }
+
+    private enum ListingFilter {
+        case ongoing
+        case completed
+    }
+
+    private var filteredListings: [APIListing] {
+        switch selectedFilter {
+        case .ongoing:
+            return listings.filter { ($0.isCompleted ?? false) == false }
+        case .completed:
+            return listings.filter { ($0.isCompleted ?? false) == true }
         }
     }
 
