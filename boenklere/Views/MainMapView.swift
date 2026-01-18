@@ -12,7 +12,6 @@ struct MainMapView: View {
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var showProfileSheet = false
     @State private var showConversationsSheet = false
-    @State private var showMessagesLoginAlert = false
     @State private var sheetDetent: PresentationDetent = .height(70)
     @State private var listings: [APIListing] = []
     @State private var selectedListing: APIListing?
@@ -102,7 +101,6 @@ struct MainMapView: View {
             SearchSheet(
                 sheetDetent: $sheetDetent,
                 showProfileSheet: $showProfileSheet,
-                showMessagesLoginAlert: $showMessagesLoginAlert,
                 listings: $listings,
                 selectedListing: $selectedListing,
                 deepLinkConversation: $deepLinkConversation,
@@ -200,7 +198,7 @@ struct MainMapView: View {
                 if authManager.isAuthenticated {
                     showConversationsSheet = true
                 } else {
-                    showMessagesLoginAlert = true
+                    authManager.signInWithApple()
                 }
             } label: {
                 ZStack(alignment: .topTrailing) {
@@ -229,7 +227,11 @@ struct MainMapView: View {
                 .overlay(Color.white.opacity(0.3))
 
             Button {
-                showProfileSheet = true
+                if authManager.isAuthenticated {
+                    showProfileSheet = true
+                } else {
+                    authManager.signInWithApple()
+                }
             } label: {
                 Image(systemName: "person.fill")
                     .font(.system(size: 18, weight: .semibold))
@@ -461,7 +463,7 @@ struct MainMapView: View {
         guard !isLoadingConversationFromNotification else { return }
         guard let conversationId = pendingConversationId else { return }
         guard authManager.isAuthenticated, let userId = authManager.userIdentifier else {
-            showMessagesLoginAlert = true
+            authManager.signInWithApple()
             return
         }
 
@@ -785,7 +787,6 @@ struct SearchSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Binding var sheetDetent: PresentationDetent
     @Binding var showProfileSheet: Bool
-    @Binding var showMessagesLoginAlert: Bool
     @Binding var listings: [APIListing]
     @Binding var selectedListing: APIListing?
     @Binding var deepLinkConversation: APIConversationSummary?
@@ -838,6 +839,10 @@ struct SearchSheet: View {
                     Spacer()
 
                     Button {
+                        if !authManager.isAuthenticated {
+                            authManager.signInWithApple()
+                            return
+                        }
                         if isCreatingListing {
                             isCreatingListing = false
                             withAnimation {
@@ -871,14 +876,6 @@ struct SearchSheet: View {
             }
 
             Spacer(minLength: 0)
-        }
-        .confirmationDialog("Logg inn", isPresented: $showMessagesLoginAlert, titleVisibility: .visible) {
-            Button("Logg inn med Apple") {
-                authManager.signInWithApple()
-            }
-            Button("Avbryt", role: .cancel) {}
-        } message: {
-            Text("Du må være logget inn for å bruke meldinger.")
         }
         .sheet(item: $selectedListing) { listing in
             ListingDetailSheet(
@@ -3944,7 +3941,6 @@ struct ListingDetailSheet: View {
     @State private var driveTimeText: String?
     @State private var showNavigationOptions = false
     @State private var showChat = false
-    @State private var showChatLoginAlert = false
 
     private var isCollapsed: Bool {
         sheetDetent == .height(70)
@@ -4076,7 +4072,7 @@ struct ListingDetailSheet: View {
                                         if authManager.isAuthenticated {
                                             showChat = true
                                         } else {
-                                            showChatLoginAlert = true
+                                            authManager.signInWithApple()
                                         }
                                     } label: {
                                         BoenklereActionButtonLabel(title: "Send melding", systemImage: "bubble.left.and.bubble.right.fill", height: actionButtonHeight)
@@ -4193,14 +4189,6 @@ struct ListingDetailSheet: View {
                 openGoogleMaps()
             }
             Button("Avbryt", role: .cancel) {}
-        }
-        .confirmationDialog("Logg inn", isPresented: $showChatLoginAlert, titleVisibility: .visible) {
-            Button("Logg inn med Apple") {
-                authManager.signInWithApple()
-            }
-            Button("Avbryt", role: .cancel) {}
-        } message: {
-            Text("Logg inn for å sende meldinger")
         }
     }
 
