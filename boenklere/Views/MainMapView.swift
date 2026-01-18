@@ -811,6 +811,7 @@ struct SearchSheet: View {
     @State private var selectedImageData: Data?
     @State private var detailSheetDetent: PresentationDetent = .medium
     @State private var useSavedAddress = false
+    @State private var offersSafePayment = false
 
     var isCollapsed: Bool {
         sheetDetent == .height(70)
@@ -1078,6 +1079,30 @@ struct SearchSheet: View {
                             }
                         }
 
+                        Toggle("Tilby Trygg betaling", isOn: $offersSafePayment)
+                            .toggleStyle(.switch)
+                            .padding(.horizontal, 4)
+
+                        if offersSafePayment {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Slik fungerer Trygg betaling")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(Color(red: 0.07, green: 0.34, blue: 0.68))
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    infoRow("Du betaler før oppdraget starter")
+                                    infoRow("Vi holder beløpet trygt frem til jobben er gjort")
+                                    infoRow("Oppdragstaker får pengene når du godkjenner utført arbeid")
+                                    infoRow("Platformavgift: 10 % av prisen du har satt")
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color(red: 0.9, green: 0.96, blue: 1.0))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+
                         if !useSavedAddress {
                             // Address search
                             VStack(spacing: 0) {
@@ -1201,6 +1226,18 @@ struct SearchSheet: View {
                     }
                 }
             }
+        }
+    }
+
+    private func infoRow(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text("•")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            Text(text)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -1686,6 +1723,11 @@ struct ProfileSheet: View {
             }
             Divider()
                 .padding(.leading, 52)
+            menuLink(title: "Vilkår", systemImage: "doc.text") {
+                TermsSheet()
+            }
+            Divider()
+                .padding(.leading, 52)
             menuRow(
                 title: "Logg ut",
                 systemImage: "rectangle.portrait.and.arrow.right",
@@ -1924,7 +1966,6 @@ struct ProfileSheet: View {
             return nil
         }
     }
-
     private func handleAuthorization(_ authorization: ASAuthorization) {
         if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
             let userIdentifier = appleIDCredential.user
@@ -1992,6 +2033,7 @@ struct ProfileSheet: View {
             }
         }
     }
+
 }
 
 struct MyListingsSheet: View {
@@ -2784,6 +2826,319 @@ private struct NotificationsSheet: View {
         }
 
         isSaving = false
+    }
+}
+
+private enum TermsDocument: String, Identifiable {
+    case termsOfUse
+    case privacy
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .termsOfUse:
+            return "Bruksvilkår"
+        case .privacy:
+            return "Personvern"
+        }
+    }
+
+    var headerTitle: String {
+        switch self {
+        case .termsOfUse:
+            return "Bruksvilkår for boenklere"
+        case .privacy:
+            return "Personvern for boenklere"
+        }
+    }
+
+    var intro: String {
+        switch self {
+        case .termsOfUse:
+            return "Disse bruksvilkårene gjelder for bruk av boenklere (\"Tjenesten\"). Ved å bruke appen aksepterer du vilkårene."
+        case .privacy:
+            return "Denne personvernerklæringen forklarer hvordan boenklere behandler personopplysninger."
+        }
+    }
+
+    var sections: [(title: String, bullets: [String])] {
+        switch self {
+        case .termsOfUse:
+            return [
+                (
+                    title: "Om tjenesten",
+                    bullets: [
+                        "boenklere er en markedsplass som kobler oppdragsgivere og oppdragstakere.",
+                        "Vi formidler kontakt mellom brukere, men er ikke part i avtalen mellom dere."
+                    ]
+                ),
+                (
+                    title: "Brukeransvar",
+                    bullets: [
+                        "Du må oppgi riktig informasjon og holde profilen din oppdatert.",
+                        "Du er ansvarlig for innholdet du publiserer og for kommunikasjonen i appen.",
+                        "Tjenesten skal ikke brukes til ulovlige eller misbrukende formål."
+                    ]
+                ),
+                (
+                    title: "Oppdrag og avtaler",
+                    bullets: [
+                        "Avtaler inngås direkte mellom brukere.",
+                        "boenklere garanterer ikke at oppdrag blir utført eller betalt, med mindre du benytter vår betalingstjeneste, Trygg betaling"
+                    ]
+                ),
+                (
+                    title: "Trygg betaling",
+                    bullets: [
+                        "Oppdragsgiver betaler før oppdraget starter når trygg betaling brukes.",
+                        "Beløpet holdes trygt frem til jobben er godkjent som utført.",
+                        "Oppdragstaker får pengene når arbeidet er godkjent.",
+                        "Platformavgift: 10 % av prisen du har satt."
+                    ]
+                ),
+                (
+                    title: "Ansvar og begrensninger",
+                    bullets: [
+                        "Tjenesten leveres som den er, uten garanti for tilgjengelighet.",
+                        "Vi er ikke ansvarlige for tap mellom brukere utover det som følger av ufravikelig lov."
+                    ]
+                ),
+                (
+                    title: "Endringer",
+                    bullets: [
+                        "Vi kan oppdatere vilkårene. Vesentlige endringer varsles i appen."
+                    ]
+                )
+            ]
+        case .privacy:
+            return [
+                (
+                    title: "Hvilke opplysninger vi behandler",
+                    bullets: [
+                        "Navn og profilinformasjon du oppgir.",
+                        "Adresse og posisjon for å vise oppdrag i nærheten.",
+                        "Meldinger og innhold du sender i appen.",
+                        "Tekniske data som enhets- og push-token for varsler."
+                    ]
+                ),
+                (
+                    title: "Hvorfor vi behandler opplysninger",
+                    bullets: [
+                        "Levere tjenesten og koble brukere til relevante oppdrag.",
+                        "Sende varsler om meldinger og oppdrag.",
+                        "Forbedre, sikre og feilsøke tjenesten."
+                    ]
+                ),
+                (
+                    title: "Deling av opplysninger",
+                    bullets: [
+                        "Med andre brukere når det er nødvendig for å gjennomføre et oppdrag.",
+                        "Med leverandører som drifter appen og lagringen av data, under databehandleravtale.",
+                        "Med myndigheter dersom vi er rettslig forpliktet."
+                    ]
+                ),
+                (
+                    title: "Lagringstid",
+                    bullets: [
+                        "Vi lagrer opplysninger så lenge du har konto eller det er nødvendig for formålet.",
+                        "Du kan be om sletting når det er mulig etter lovpålagte krav."
+                    ]
+                ),
+                (
+                    title: "Dine rettigheter",
+                    bullets: [
+                        "Innsyn i opplysninger vi har om deg.",
+                        "Rett til retting og sletting.",
+                        "Rett til å protestere mot behandlingen der det er relevant."
+                    ]
+                )
+            ]
+        }
+    }
+}
+
+private struct TermsSheet: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var selectedDocument: TermsDocument?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ProfileSubpageHeader(title: "Vilkår") {
+                dismiss()
+            }
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    termsRow(title: "Bruksvilkår", systemImage: "doc.text") {
+                        selectedDocument = .termsOfUse
+                    }
+
+                    Divider()
+                        .padding(.leading, 52)
+
+                    termsRow(title: "Personvern", systemImage: "hand.raised") {
+                        selectedDocument = .privacy
+                    }
+                }
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .sheet(item: $selectedDocument) { document in
+            TermsModal(document: document)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func termsRow(
+        title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .foregroundColor(.blue)
+                    .frame(width: 28, height: 28, alignment: .center)
+
+                Text(title)
+                    .font(.body)
+                    .foregroundColor(.primary)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct TermsModal: View {
+    let document: TermsDocument
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TermsModalHeader(title: document.title) {
+                dismiss()
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(document.headerTitle)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+
+                    Text(document.intro)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    ForEach(Array(document.sections.enumerated()), id: \.offset) { _, section in
+                        termsSection(title: section.title, bullets: section.bullets)
+                    }
+
+                    contactSection
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func termsSection(title: String, bullets: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+                .fontWeight(.semibold)
+                .foregroundColor(.primary)
+
+            ForEach(bullets, id: \.self) { bullet in
+                bulletRow(bullet)
+            }
+        }
+    }
+
+    private func bulletRow(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text("•")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            Text(text)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var contactSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Kontakt")
+                .font(.headline)
+                .fontWeight(.semibold)
+                .foregroundColor(.primary)
+
+            Text("Snodig AS")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            Text("Orgnr. 928027201")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            Text("thang-phan@outlook.com")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
+private struct TermsModalHeader: View {
+    let title: String
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color(.systemGray3))
+                .frame(width: 36, height: 5)
+                .padding(.top, 5)
+                .padding(.bottom, 3)
+
+            HStack {
+                Text(title)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+
+                Spacer()
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.gray, in: Circle())
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
     }
 }
 
