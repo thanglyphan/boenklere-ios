@@ -78,6 +78,7 @@ struct APIUser: Codable {
     let messageNotificationsEnabled: Bool?
     let listingNotificationsEnabled: Bool?
     let listingNotificationRadiusKm: Double?
+    let stripeAccountId: String?
 }
 
 struct APIReview: Codable {
@@ -120,6 +121,10 @@ private struct AcceptSafePaymentRequest: Codable {
     let userId: String
 }
 
+private struct CheckOnboardingStatusRequest: Codable {
+    let userId: String
+}
+
 private struct SafePaymentIntentRequest: Codable {
     let userId: String
 }
@@ -130,6 +135,11 @@ private struct SafePaymentConfirmRequest: Codable {
 
 struct SafePaymentAcceptResponse: Codable {
     let conversation: APIConversation
+    let requiresOnboarding: Bool
+    let onboardingUrl: String?
+}
+
+struct CheckOnboardingStatusResponse: Codable {
     let requiresOnboarding: Bool
     let onboardingUrl: String?
 }
@@ -601,6 +611,31 @@ class APIService {
         }
 
         let apiResponse = try JSONDecoder().decode(APIResponse<SafePaymentAcceptResponse>.self, from: data)
+        guard let payload = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return payload
+    }
+
+    func checkSafePaymentOnboarding(conversationId: Int64, userId: String) async throws -> CheckOnboardingStatusResponse {
+        let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/check-onboarding")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            CheckOnboardingStatusRequest(userId: userId)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<CheckOnboardingStatusResponse>.self, from: data)
         guard let payload = apiResponse.data else {
             throw APIError.invalidResponse
         }

@@ -22,6 +22,7 @@ struct ChatSheet: View {
     @State private var showEditListingSheet = false
     @State private var listingOverride: APIListing?
     @State private var isAcceptingTask = false
+    @State private var isCheckingOnboarding = false
     @State private var didAcceptSafePayment = false
     @State private var showOnboarding = false
     @State private var onboardingUrl: URL?
@@ -31,6 +32,7 @@ struct ChatSheet: View {
     @State private var isStartingPayment = false
     @State private var showCompleteSheet = false
     @State private var isCompletingListing = false
+    @State private var showStripeOnboardingExplanation = false
 
     var body: some View {
         ZStack {
@@ -119,6 +121,7 @@ struct ChatSheet: View {
                     inputBar
                 }
             }
+
         }
         .toolbar(.hidden, for: .navigationBar)
         .task {
@@ -196,6 +199,18 @@ struct ChatSheet: View {
                 }
             )
             .environmentObject(authManager)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
+        }
+        .sheet(isPresented: $showStripeOnboardingExplanation) {
+            StripeOnboardingSheet(
+                onContinue: {
+                    startStripeOnboarding()
+                },
+                onCancel: {
+                    showStripeOnboardingExplanation = false
+                }
+            )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
         }
@@ -302,7 +317,7 @@ struct ChatSheet: View {
                 if isOwner {
                     Task { await handleOwnerPaymentAction() }
                 } else {
-                    Task { await handleAcceptAction() }
+                    Task { await checkOnboardingAndProceed() }
                 }
             } label: {
                 BoenklereActionButtonLabel(title: acceptActionTitle, systemImage: "checkmark.seal.fill")
@@ -448,6 +463,51 @@ struct ChatSheet: View {
     }
 
     @MainActor
+    private func checkOnboardingAndProceed() async {
+        guard !isCheckingOnboarding else { return }
+        guard authManager.isAuthenticated else { return }
+        if isOwner { return }
+        guard let conversation else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isCheckingOnboarding = true
+        defer { isCheckingOnboarding = false }
+
+        do {
+            let response = try await APIService.shared.checkSafePaymentOnboarding(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            if response.requiresOnboarding {
+                guard let urlString = response.onboardingUrl,
+                      let url = URL(string: urlString) else {
+                    errorMessage = "Kunne ikke starte Stripe onboarding"
+                    return
+                }
+                onboardingUrl = url
+                showStripeOnboardingExplanation = true
+                return
+            }
+        } catch {
+            errorMessage = "Kunne ikke sjekke Stripe-tilkobling"
+            return
+        }
+
+        await handleAcceptAction()
+    }
+
+    @MainActor
+    private func startStripeOnboarding() {
+        showStripeOnboardingExplanation = false
+        guard let url = onboardingUrl else {
+            errorMessage = "Kunne ikke starte Stripe onboarding"
+            return
+        }
+        shouldRetryAcceptAfterOnboarding = true
+        showOnboarding = true
+    }
+
+    @MainActor
     private func handleAcceptAction() async {
         guard !isAcceptingTask else { return }
         guard authManager.isAuthenticated else { return }
@@ -557,7 +617,7 @@ struct ChatSheet: View {
     }
 
     private var isAcceptActionDisabled: Bool {
-        isAcceptingTask || isStartingPayment || (!isOwner && conversation == nil)
+        isAcceptingTask || isCheckingOnboarding || isStartingPayment || (!isOwner && conversation == nil)
     }
 
     private var ownerDisplayName: String {
@@ -756,9 +816,10 @@ struct ConversationsSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.primary)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
                             .frame(width: 44, height: 44)
+                            .background(Color.gray, in: Circle())
                     }
                 }
 
@@ -1527,9 +1588,10 @@ private struct ChatHeader: View {
                 if !isModalStyle {
                     Button(action: onBack) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.primary)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
                             .frame(width: 44, height: 44)
+                            .background(Color.gray, in: Circle())
                     }
                 }
 
@@ -1575,6 +1637,7 @@ struct ConversationChatSheet: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     var isModalStyle: Bool = true
+    @State private var sheetDetent: PresentationDetent = .large
     @State private var listing: APIListing?
     @State private var isLoadingListing = false
     @State private var showListingSheet = false
@@ -1585,8 +1648,10 @@ struct ConversationChatSheet: View {
     @State private var firstUnreadMessageId: Int64?
     @State private var didMarkRead = false
     @State private var isAcceptingTask = false
+    @State private var isCheckingOnboarding = false
     @State private var didAcceptSafePayment = false
     @State private var safePaymentStatusOverride: String?
+    @State private var showStripeOnboardingExplanation = false
     @State private var showOnboarding = false
     @State private var onboardingUrl: URL?
     @State private var shouldRetryAcceptAfterOnboarding = false
@@ -1609,99 +1674,99 @@ struct ConversationChatSheet: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
             VStack(spacing: 0) {
-                ChatHeader(
-                    title: conversation.listingTitle,
-                    isModalStyle: isModalStyle
-                ) {
-                    dismiss()
-                }
+                collapsedHeader
 
-                if let listing {
-                    ListingRow(listing: listing, userLocation: nil) {
-                        if isOwner {
-                            showEditListingSheet = true
-                        } else {
-                            showListingSheet = true
-                        }
-                    }
-
-                    if shouldShowSafePaymentAction {
-                        acceptActionSection
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                    } else if shouldShowSafePaymentAcceptedInfo {
-                        VStack(spacing: 8) {
-                            acceptedInfoSection
-
-                            if shouldShowCompletePaymentButton {
-                                completePaymentButton
-                            }
-
-                            if shouldShowReviewOwnerButton {
-                                reviewOwnerButton
+                if !isCollapsed {
+                    if let listing {
+                        ListingRow(listing: listing, userLocation: nil) {
+                            if isOwner {
+                                showEditListingSheet = true
+                            } else {
+                                showListingSheet = true
                             }
                         }
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                    }
 
-                } else if isLoadingListing {
-                    ProgressView()
-                        .padding(.vertical, 8)
+                        if shouldShowSafePaymentAction {
+                            acceptActionSection
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                        } else if shouldShowSafePaymentAcceptedInfo {
+                            VStack(spacing: 8) {
+                                acceptedInfoSection
+
+                                if shouldShowCompletePaymentButton {
+                                    completePaymentButton
+                                }
+
+                                if shouldShowReviewOwnerButton {
+                                    reviewOwnerButton
+                                }
+                            }
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                        }
+
+                    } else if isLoadingListing {
+                        ProgressView()
+                            .padding(.vertical, 8)
+                    }
                 }
 
-                if !authManager.isAuthenticated {
-                    VStack(spacing: 12) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(.secondary)
-                        Text("Logg inn for å sende meldinger")
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(spacing: 0) {
-                                ForEach(messageRows) { row in
-                                    if row.message.id == firstUnreadMessageId {
-                                        NewMessagePill()
+                if !isCollapsed {
+                    if !authManager.isAuthenticated {
+                        VStack(spacing: 12) {
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 28))
+                                .foregroundColor(.secondary)
+                            Text("Logg inn for å sende meldinger")
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(messageRows) { row in
+                                        if row.message.id == firstUnreadMessageId {
+                                            NewMessagePill()
+                                        }
+                                        MessageBubble(
+                                            message: row.message,
+                                            bodyText: row.bodyText,
+                                            isSystem: row.isSystem,
+                                            isOutgoing: row.isOutgoing,
+                                            avatarName: row.isOutgoing ? nil : displayOtherName,
+                                            showsAvatar: row.showAvatar,
+                                            showsTimestamp: row.showTimestamp,
+                                            isGroupedWithPrevious: row.isGroupedWithPrevious,
+                                            isGroupedWithNext: row.isGroupedWithNext,
+                                            topSpacing: row.topSpacing,
+                                            onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
+                                        )
+                                        .id(row.message.id)
                                     }
-                                    MessageBubble(
-                                        message: row.message,
-                                        bodyText: row.bodyText,
-                                        isSystem: row.isSystem,
-                                        isOutgoing: row.isOutgoing,
-                                        avatarName: row.isOutgoing ? nil : displayOtherName,
-                                        showsAvatar: row.showAvatar,
-                                        showsTimestamp: row.showTimestamp,
-                                        isGroupedWithPrevious: row.isGroupedWithPrevious,
-                                        isGroupedWithNext: row.isGroupedWithNext,
-                                        topSpacing: row.topSpacing,
-                                        onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
-                                    )
-                                    .id(row.message.id)
                                 }
+                                .padding(.horizontal, 14)
+                                .padding(.top, 12)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.top, 12)
-                        }
-                        .scrollDismissesKeyboard(.interactively)
-                        .background(Color(.systemGroupedBackground))
-                        .onChange(of: messages.count) { _, _ in
-                            if let lastId = messages.last?.id {
-                                withAnimation {
-                                    proxy.scrollTo(lastId, anchor: .bottom)
+                            .scrollDismissesKeyboard(.interactively)
+                            .background(Color(.systemGroupedBackground))
+                            .onChange(of: messages.count) { _, _ in
+                                if let lastId = messages.last?.id {
+                                    withAnimation {
+                                        proxy.scrollTo(lastId, anchor: .bottom)
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                if authManager.isAuthenticated {
-                    inputBar
+                    if authManager.isAuthenticated {
+                        inputBar
+                    }
                 }
             }
+
         }
         .toolbar(.hidden, for: .navigationBar)
         .task {
@@ -1805,9 +1870,23 @@ struct ConversationChatSheet: View {
             .presentationDetents([.medium])
             .presentationDragIndicator(.hidden)
         }
+        .sheet(isPresented: $showStripeOnboardingExplanation) {
+            StripeOnboardingSheet(
+                onContinue: {
+                    startStripeOnboarding()
+                },
+                onCancel: {
+                    showStripeOnboardingExplanation = false
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
+        }
         .onChange(of: listing?.id) { _, _ in
             Task { await checkIfAlreadyReviewedOwner() }
         }
+        .presentationDetents([.height(70), .large], selection: $sheetDetent)
+        .presentationDragIndicator(.hidden)
     }
 
     private var inputBar: some View {
@@ -1817,6 +1896,99 @@ struct ConversationChatSheet: View {
             errorMessage: errorMessage,
             onSend: { Task { await sendMessage() } }
         )
+    }
+
+    private var collapsedHeader: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color(.systemGray3))
+                .frame(width: 36, height: 5)
+                .padding(.top, 5)
+                .padding(.bottom, 3)
+
+            HStack {
+                if !isModalStyle {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Color.gray, in: Circle())
+                    }
+                }
+
+                if isCollapsed {
+                    collapsedContent
+                } else {
+                    Text(conversation.listingTitle)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if isModalStyle {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Color.gray, in: Circle())
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var collapsedContent: some View {
+        if shouldShowSafePaymentAction {
+            collapsedActionButton(title: "Godta oppdraget", icon: "checkmark.circle.fill") {
+                if isOwner {
+                    Task { await handleOwnerPaymentAction() }
+                } else {
+                    Task { await checkOnboardingAndProceed() }
+                }
+            }
+        } else if shouldShowCompletePaymentButton {
+            collapsedActionButton(title: "Fullfør og utbetal", icon: "checkmark.seal.fill") {
+                Task { await completeListingAndReview() }
+            }
+        } else if shouldShowReviewOwnerButton {
+            collapsedActionButton(title: "Gi vurdering", icon: "star.fill") {
+                showReviewOwnerSheet = true
+            }
+        } else {
+            Text(conversation.listingTitle)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+        }
+    }
+
+    private func collapsedActionButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.blue, in: Capsule())
+        }
+    }
+
+    private var isCollapsed: Bool {
+        sheetDetent == .height(70)
     }
 
     private var otherUserId: String? {
@@ -1919,13 +2091,13 @@ struct ConversationChatSheet: View {
                 if isOwner {
                     Task { await handleOwnerPaymentAction() }
                 } else {
-                    Task { await handleAcceptAction() }
+                    Task { await checkOnboardingAndProceed() }
                 }
             } label: {
                 BoenklereActionButtonLabel(title: acceptActionTitle ?? "Godta", systemImage: "checkmark.seal.fill")
             }
             .buttonStyle(.plain)
-            .disabled(isAcceptingTask || isStartingPayment)
+            .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment)
         }
     }
 
@@ -2212,12 +2384,54 @@ struct ConversationChatSheet: View {
     }
 
     @MainActor
+    private func checkOnboardingAndProceed() async {
+        guard !isCheckingOnboarding else { return }
+        guard authManager.isAuthenticated else { return }
+        if isOwner { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isCheckingOnboarding = true
+        defer { isCheckingOnboarding = false }
+
+        do {
+            let response = try await APIService.shared.checkSafePaymentOnboarding(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            if response.requiresOnboarding {
+                guard let urlString = response.onboardingUrl,
+                      let url = URL(string: urlString) else {
+                    errorMessage = "Kunne ikke starte Stripe onboarding"
+                    return
+                }
+                onboardingUrl = url
+                showStripeOnboardingExplanation = true
+                return
+            }
+        } catch {
+            errorMessage = "Kunne ikke sjekke Stripe-tilkobling"
+            return
+        }
+
+        await handleAcceptAction()
+    }
+
+    @MainActor
+    private func startStripeOnboarding() {
+        showStripeOnboardingExplanation = false
+        guard let url = onboardingUrl else {
+            errorMessage = "Kunne ikke starte Stripe onboarding"
+            return
+        }
+        shouldRetryAcceptAfterOnboarding = true
+        showOnboarding = true
+    }
+
+    @MainActor
     private func handleAcceptAction() async {
         guard !isAcceptingTask else { return }
         guard authManager.isAuthenticated else { return }
-        if isOwner {
-            return
-        }
+        if isOwner { return }
         guard let userId = authManager.userIdentifier else { return }
 
         isAcceptingTask = true
@@ -2230,7 +2444,7 @@ struct ConversationChatSheet: View {
             if response.requiresOnboarding {
                 if let urlString = response.onboardingUrl,
                    let url = URL(string: urlString) {
-                    print("Stripe: onboarding required conversationId=\(conversation.id)")
+                    print("Stripe: onboarding required conversationId=\(conversation.id) onboardingUrl=\(response.onboardingUrl ?? "nil")")
                     onboardingUrl = url
                     shouldRetryAcceptAfterOnboarding = true
                     showOnboarding = true
@@ -2254,6 +2468,28 @@ struct ConversationChatSheet: View {
         guard shouldRetryAcceptAfterOnboarding else { return }
         shouldRetryAcceptAfterOnboarding = false
         await handleAcceptAction()
+    }
+
+    @MainActor
+    private func fetchAndOpenOnboarding() async {
+        guard let userId = authManager.userIdentifier else { return }
+
+        do {
+            let response = try await APIService.shared.acceptSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            if let urlString = response.onboardingUrl,
+               let url = URL(string: urlString) {
+                onboardingUrl = url
+                shouldRetryAcceptAfterOnboarding = true
+                showOnboarding = true
+            } else {
+                errorMessage = "Kunne ikke starte Stripe onboarding"
+            }
+        } catch {
+            errorMessage = "Kunne ikke starte Stripe onboarding"
+        }
     }
 
     @MainActor
@@ -2921,70 +3157,86 @@ private struct ReviewOwnerSheet: View {
     let onCancel: () -> Void
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                VStack(spacing: 8) {
-                    Text("Vurder \(ownerName)")
-                        .font(.headline)
+        VStack(spacing: 0) {
+            sheetHeader
 
+            ScrollView {
+                VStack(spacing: 20) {
                     Text("Hvordan var din opplevelse med oppdraget?")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-                }
 
-                HStack(spacing: 12) {
-                    ForEach(1...5, id: \.self) { star in
-                        Button {
-                            rating = star
-                        } label: {
-                            Image(systemName: star <= rating ? "star.fill" : "star")
-                                .font(.system(size: 32))
-                                .foregroundColor(star <= rating ? .yellow : .gray.opacity(0.4))
+                    HStack(spacing: 12) {
+                        ForEach(1...5, id: \.self) { star in
+                            Button {
+                                rating = star
+                            } label: {
+                                Image(systemName: star <= rating ? "star.fill" : "star")
+                                    .font(.system(size: 32))
+                                    .foregroundColor(star <= rating ? .yellow : .gray.opacity(0.4))
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
-                }
-                .padding(.vertical, 8)
+                    .padding(.vertical, 8)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Kommentar (valgfritt)")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Kommentar (valgfritt)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
 
-                    TextField("Skriv en kommentar...", text: $comment, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(3...6)
+                        TextField("Skriv en kommentar...", text: $comment, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(3...6)
+                    }
+
+                    Button {
+                        onSubmit()
+                    } label: {
+                        if isSubmitting {
+                            BoenklereActionButtonLabel(title: "Send vurdering", systemImage: "star.fill")
+                                .overlay(ProgressView())
+                        } else {
+                            BoenklereActionButtonLabel(title: "Send vurdering", systemImage: "star.fill")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(rating == 0 || isSubmitting)
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+            }
+        }
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private var sheetHeader: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color(.systemGray3))
+                .frame(width: 36, height: 5)
+                .padding(.top, 5)
+                .padding(.bottom, 3)
+
+            HStack {
+                Text("Vurder \(ownerName)")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
 
                 Spacer()
 
-                Button {
-                    onSubmit()
-                } label: {
-                    if isSubmitting {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                    } else {
-                        Text("Send vurdering")
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(rating == 0 || isSubmitting)
-            }
-            .padding(24)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Avbryt") {
-                        onCancel()
-                    }
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.gray, in: Circle())
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
     }
 }

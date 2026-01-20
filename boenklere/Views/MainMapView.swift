@@ -3,6 +3,7 @@ import MapKit
 import CoreLocation
 import AuthenticationServices
 import PhotosUI
+import SafariServices
 import UIKit
 import StripePaymentSheet
 
@@ -910,8 +911,6 @@ struct SearchSheet: View {
         .sheet(item: $deepLinkConversation) { conversation in
             ConversationChatSheet(conversation: conversation)
                 .environmentObject(authManager)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.hidden)
         }
         .sheet(isPresented: $showAppleSignInSheet) {
             AppleSignInSheet()
@@ -1498,6 +1497,13 @@ struct ProfileSheet: View {
     @State private var addressIsConfirmed = false
     @State private var isSelectingAddressSuggestion = false
     @State private var navigateToMyListings = false
+    @State private var isCheckingStripeOnboarding = false
+    @State private var requiresStripeOnboarding = false
+    @State private var showStripeOnboardingExplanation = false
+    @State private var showStripeOnboarding = false
+    @State private var onboardingUrl: URL?
+    @State private var stripeStatusError: String?
+    @State private var stripeCheckConversationId: Int64?
 
     init(openMyListings: Binding<Bool> = .constant(false)) {
         self._openMyListings = openMyListings
@@ -1545,6 +1551,25 @@ struct ProfileSheet: View {
         } message: {
             Text("Du kan logge inn igjen når som helst.")
         }
+        .sheet(isPresented: $showStripeOnboardingExplanation) {
+            StripeOnboardingSheet(
+                onContinue: {
+                    startStripeOnboarding()
+                },
+                onCancel: {
+                    showStripeOnboardingExplanation = false
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
+        }
+        .sheet(isPresented: $showStripeOnboarding) {
+            if let url = onboardingUrl {
+                SafariView(url: url) {
+                    Task { await refreshStripeOnboardingStatus() }
+                }
+            }
+        }
         .onAppear {
             if nameDraft.isEmpty {
                 nameDraft = authManager.userName ?? ""
@@ -1558,12 +1583,26 @@ struct ProfileSheet: View {
                     !addressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
             triggerMyListingsNavigation()
+            if authManager.isAuthenticated {
+                Task { await refreshStripeOnboardingStatus() }
+            }
         }
         .onDisappear {
             addressSearch.search(query: "")
         }
         .onChange(of: openMyListings) { _, _ in
             triggerMyListingsNavigation()
+        }
+        .onChange(of: authManager.isAuthenticated) { _, newValue in
+            if newValue {
+                Task { await refreshStripeOnboardingStatus() }
+            } else {
+                requiresStripeOnboarding = false
+                showStripeOnboardingExplanation = false
+                showStripeOnboarding = false
+                onboardingUrl = nil
+                stripeStatusError = nil
+            }
         }
         .onChange(of: nameDraft) { _, newValue in
             guard isEditingName else { return }
@@ -1630,6 +1669,17 @@ struct ProfileSheet: View {
 
             if let addressError {
                 Text(addressError)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
+            if shouldShowStripeConnectButton {
+                stripeConnectInfoBox
+                stripeConnectButton
+            }
+
+            if let stripeStatusError {
+                Text(stripeStatusError)
                     .font(.caption)
                     .foregroundColor(.red)
             }
@@ -1870,6 +1920,37 @@ struct ProfileSheet: View {
         .contentShape(Rectangle())
     }
 
+    private var shouldShowStripeConnectButton: Bool {
+        authManager.isAuthenticated && requiresStripeOnboarding
+    }
+
+    private var stripeConnectButton: some View {
+        Button {
+            Task { await checkStripeOnboardingAndPresent() }
+        } label: {
+            BoenklereActionButtonLabel(title: "Koble meg til Stripe", systemImage: "link")
+        }
+        .buttonStyle(.plain)
+        .disabled(isCheckingStripeOnboarding)
+    }
+
+    private var stripeConnectInfoBox: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Trygg betaling")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+            Text("For at vi skal kunne betale deg for oppdrag, må du fullføre en enkel onboarding hos vår betalingspartner Stripe.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private var displayName: String {
         let name = authManager.userName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? "Legg til navn" : name
@@ -1898,6 +1979,72 @@ struct ProfileSheet: View {
         guard openMyListings else { return }
         openMyListings = false
         navigateToMyListings = true
+    }
+
+    @MainActor
+    private func refreshStripeOnboardingStatus() async {
+        guard authManager.isAuthenticated else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isCheckingStripeOnboarding = true
+        stripeStatusError = nil
+
+        let conversationId = await resolveStripeConversationId(userId: userId)
+        do {
+            let response = try await APIService.shared.checkSafePaymentOnboarding(
+                conversationId: conversationId,
+                userId: userId
+            )
+            requiresStripeOnboarding = response.requiresOnboarding
+            onboardingUrl = response.onboardingUrl.flatMap { URL(string: $0) }
+        } catch {
+            stripeStatusError = "Kunne ikke sjekke Stripe-tilkobling"
+            requiresStripeOnboarding = true
+            onboardingUrl = nil
+        }
+
+        isCheckingStripeOnboarding = false
+    }
+
+    @MainActor
+    private func checkStripeOnboardingAndPresent() async {
+        await refreshStripeOnboardingStatus()
+        guard requiresStripeOnboarding else { return }
+        guard onboardingUrl != nil else {
+            stripeStatusError = "Kunne ikke starte Stripe onboarding"
+            return
+        }
+        showStripeOnboardingExplanation = true
+    }
+
+    @MainActor
+    private func startStripeOnboarding() {
+        showStripeOnboardingExplanation = false
+        guard onboardingUrl != nil else {
+            stripeStatusError = "Kunne ikke starte Stripe onboarding"
+            return
+        }
+        showStripeOnboarding = true
+    }
+
+    @MainActor
+    private func resolveStripeConversationId(userId: String) async -> Int64 {
+        if let cachedId = stripeCheckConversationId {
+            return cachedId
+        }
+
+        do {
+            let conversations = try await APIService.shared.getConversations(userId: userId)
+            if let conversationId = conversations.first?.id {
+                stripeCheckConversationId = conversationId
+                return conversationId
+            }
+        } catch {
+            // Fall back to a placeholder ID if conversations aren't available.
+        }
+
+        stripeCheckConversationId = 0
+        return 0
     }
 
 
@@ -2083,6 +2230,35 @@ struct ProfileSheet: View {
         }
     }
 
+}
+
+private struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+    let onDismiss: (() -> Void)?
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        private let onDismiss: (() -> Void)?
+
+        init(onDismiss: (() -> Void)?) {
+            self.onDismiss = onDismiss
+        }
+
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            onDismiss?()
+        }
+    }
 }
 
 struct MyListingsSheet: View {
@@ -2324,9 +2500,10 @@ struct MyListingsSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.primary)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
                             .frame(width: 44, height: 44)
+                            .background(Color.gray, in: Circle())
                     }
                 }
 
@@ -2603,9 +2780,10 @@ private struct ProfileSubpageHeader: View {
             HStack {
                 Button(action: onBack) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.primary)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white)
                         .frame(width: 44, height: 44)
+                        .background(Color.gray, in: Circle())
                 }
 
                 Text(title)
