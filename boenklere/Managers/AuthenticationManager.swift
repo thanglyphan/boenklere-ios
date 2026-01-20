@@ -189,90 +189,13 @@ extension AuthenticationManager {
 extension AuthenticationManager: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         Task { @MainActor in
-            if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
-                let userIdentifier = appleIDCredential.user
-                
-                UserDefaults.standard.set(userIdentifier, forKey: userIdentifierKey)
-                
-                self.userIdentifier = userIdentifier
-                
-                if let fullName = appleIDCredential.fullName {
-                    let name = [fullName.givenName, fullName.familyName]
-                        .compactMap { $0 }
-                        .joined(separator: " ")
-                    if !name.isEmpty {
-                        self.userName = name
-                        UserDefaults.standard.set(name, forKey: userNameKey)
-                    }
-                }
-                if self.userName == nil {
-                    self.userName = UserDefaults.standard.string(forKey: userNameKey)
-                }
-                
-                if let email = appleIDCredential.email {
-                    self.userEmail = email
-                    UserDefaults.standard.set(email, forKey: userEmailKey)
-                }
-                if self.userEmail == nil {
-                    self.userEmail = UserDefaults.standard.string(forKey: userEmailKey)
-                }
-
-                self.isAuthenticated = true
-                self.errorMessage = nil
-
-                Task {
-                    do {
-                        let user = try await APIService.shared.upsertUser(
-                            userId: userIdentifier,
-                            name: self.userName
-                        )
-                        if let name = user.name?.trimmingCharacters(in: .whitespacesAndNewlines),
-                           !name.isEmpty {
-                            self.userName = name
-                            UserDefaults.standard.set(name, forKey: self.userNameKey)
-                        }
-                        self.userAddress = user.address
-                        self.userLatitude = user.latitude
-                        self.userLongitude = user.longitude
-                        if let enabled = user.messageNotificationsEnabled {
-                            self.messageNotificationsEnabled = enabled
-                        }
-                        if let enabled = user.listingNotificationsEnabled {
-                            self.listingNotificationsEnabled = enabled
-                        }
-                        if let radius = user.listingNotificationRadiusKm {
-                            self.listingNotificationRadiusKm = radius
-                        }
-                        if let address = user.address {
-                            UserDefaults.standard.set(address, forKey: self.userAddressKey)
-                        }
-                        if let latitude = user.latitude {
-                            UserDefaults.standard.set(latitude, forKey: self.userLatitudeKey)
-                        }
-                        if let longitude = user.longitude {
-                            UserDefaults.standard.set(longitude, forKey: self.userLongitudeKey)
-                        }
-                        if let enabled = user.messageNotificationsEnabled {
-                            UserDefaults.standard.set(enabled, forKey: self.messageNotificationsEnabledKey)
-                        }
-                        if let enabled = user.listingNotificationsEnabled {
-                            UserDefaults.standard.set(enabled, forKey: self.listingNotificationsEnabledKey)
-                        }
-                        if let radius = user.listingNotificationRadiusKm {
-                            UserDefaults.standard.set(radius, forKey: self.listingNotificationRadiusKmKey)
-                        }
-                        await self.registerDeviceTokenIfNeeded()
-                    } catch {
-                        print("Failed to upsert user: \(error)")
-                    }
-                }
-            }
+            handleAuthorization(authorization)
         }
     }
-    
+
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         Task { @MainActor in
-            self.errorMessage = error.localizedDescription
+            handleAuthorizationError(error)
         }
     }
 
@@ -308,6 +231,92 @@ extension AuthenticationManager: ASAuthorizationControllerDelegate {
     @MainActor
     func syncDeviceTokenIfNeeded() async {
         await registerDeviceTokenIfNeeded()
+    }
+
+    @MainActor
+    func handleAuthorization(_ authorization: ASAuthorization) {
+        guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential else { return }
+        let userIdentifier = appleIDCredential.user
+
+        UserDefaults.standard.set(userIdentifier, forKey: userIdentifierKey)
+
+        self.userIdentifier = userIdentifier
+
+        if let fullName = appleIDCredential.fullName {
+            let name = [fullName.givenName, fullName.familyName]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            if !name.isEmpty {
+                self.userName = name
+                UserDefaults.standard.set(name, forKey: userNameKey)
+            }
+        }
+        if self.userName == nil {
+            self.userName = UserDefaults.standard.string(forKey: userNameKey)
+        }
+
+        if let email = appleIDCredential.email {
+            self.userEmail = email
+            UserDefaults.standard.set(email, forKey: userEmailKey)
+        }
+        if self.userEmail == nil {
+            self.userEmail = UserDefaults.standard.string(forKey: userEmailKey)
+        }
+
+        self.isAuthenticated = true
+        self.errorMessage = nil
+
+        Task {
+            do {
+                let user = try await APIService.shared.upsertUser(
+                    userId: userIdentifier,
+                    name: self.userName
+                )
+                if let name = user.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !name.isEmpty {
+                    self.userName = name
+                    UserDefaults.standard.set(name, forKey: self.userNameKey)
+                }
+                self.userAddress = user.address
+                self.userLatitude = user.latitude
+                self.userLongitude = user.longitude
+                if let enabled = user.messageNotificationsEnabled {
+                    self.messageNotificationsEnabled = enabled
+                }
+                if let enabled = user.listingNotificationsEnabled {
+                    self.listingNotificationsEnabled = enabled
+                }
+                if let radius = user.listingNotificationRadiusKm {
+                    self.listingNotificationRadiusKm = radius
+                }
+                if let address = user.address {
+                    UserDefaults.standard.set(address, forKey: self.userAddressKey)
+                }
+                if let latitude = user.latitude {
+                    UserDefaults.standard.set(latitude, forKey: self.userLatitudeKey)
+                }
+                if let longitude = user.longitude {
+                    UserDefaults.standard.set(longitude, forKey: self.userLongitudeKey)
+                }
+                if let enabled = user.messageNotificationsEnabled {
+                    UserDefaults.standard.set(enabled, forKey: self.messageNotificationsEnabledKey)
+                }
+                if let enabled = user.listingNotificationsEnabled {
+                    UserDefaults.standard.set(enabled, forKey: self.listingNotificationsEnabledKey)
+                }
+                if let radius = user.listingNotificationRadiusKm {
+                    UserDefaults.standard.set(radius, forKey: self.listingNotificationRadiusKmKey)
+                }
+                await self.registerDeviceTokenIfNeeded()
+            } catch {
+                print("Failed to upsert user: \(error)")
+            }
+        }
+    }
+
+    @MainActor
+    func handleAuthorizationError(_ error: Error) {
+        errorMessage = error.localizedDescription
     }
 }
 

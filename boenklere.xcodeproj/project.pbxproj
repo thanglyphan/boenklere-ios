@@ -17,6 +17,8 @@
 		A1000035 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000033 /* AppDelegate.swift */; };
 		A1000036 /* ChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000034 /* ChatSheet.swift */; };
 		A1000037 /* ActionButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000038 /* ActionButton.swift */; };
+		A1000039 /* AppleSignInSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100003A /* AppleSignInSheet.swift */; };
+		A1000041 /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = A1000043 /* StripePaymentSheet */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +35,7 @@
 		A1000033 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A1000034 /* ChatSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSheet.swift; sourceTree = "<group>"; };
 		A1000038 /* ActionButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components/ActionButton.swift; sourceTree = "<group>"; };
+		A100003A /* AppleSignInSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSignInSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -72,6 +75,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000014 /* AuthenticationView.swift */,
+				A100003A /* AppleSignInSheet.swift */,
 				A1000015 /* MainMapView.swift */,
 				A1000034 /* ChatSheet.swift */,
 				A1000038 /* ActionButton.swift */,
@@ -103,9 +107,13 @@
 			buildConfigurationList = A1000019 /* Build configuration list for PBXNativeTarget "boenklere" */;
 			buildPhases = (
 				A100000B /* Sources */,
+				A1000040 /* Frameworks */,
 				A100000D /* Resources */,
 			);
 			buildRules = (
+			);
+			packageProductDependencies = (
+				A1000043 /* StripePaymentSheet */,
 			);
 			dependencies = (
 			);
@@ -138,6 +146,9 @@
 				Base,
 			);
 			mainGroup = A1000007;
+			packageReferences = (
+				A1000042 /* XCRemoteSwiftPackageReference "stripe-ios" */,
+			);
 			productRefGroup = A100000F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -146,6 +157,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000040 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000041 /* StripePaymentSheet in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A100000D /* Resources */ = {
@@ -166,6 +188,7 @@
 				A1000002 /* ContentView.swift in Sources */,
 				A1000001 /* BoenklereApp.swift in Sources */,
 				A1000004 /* AuthenticationView.swift in Sources */,
+				A1000039 /* AppleSignInSheet.swift in Sources */,
 				A1000005 /* MainMapView.swift in Sources */,
 				A1000006 /* AuthenticationManager.swift in Sources */,
 				A1000030 /* APIService.swift in Sources */,
@@ -385,6 +408,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A1000042 /* XCRemoteSwiftPackageReference "stripe-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stripe/stripe-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 24.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1000043 /* StripePaymentSheet */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000042 /* XCRemoteSwiftPackageReference "stripe-ios" */;
+			productName = StripePaymentSheet;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A1000008 /* Project object */;
 }

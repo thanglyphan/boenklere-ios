@@ -9,6 +9,7 @@ struct APIListing: Codable, Identifiable, Hashable {
     let latitude: Double?
     let longitude: Double?
     let price: Double
+    let offersSafePayment: Bool?
     let userId: String
     let userName: String?
     let isCompleted: Bool?
@@ -28,6 +29,15 @@ struct APIConversation: Codable, Identifiable {
     let listingId: Int64
     let buyerId: String
     let sellerId: String
+    let safePaymentAcceptedAt: String?
+    let safePaymentAcceptedBy: String?
+    let safePaymentStatus: String?
+    let safePaymentIntentId: String?
+    let safePaymentAmount: Int64?
+    let safePaymentFee: Int64?
+    let safePaymentCurrency: String?
+    let safePaymentDestinationAccountId: String?
+    let safePaymentCapturedAt: String?
     let createdAt: String?
     let updatedAt: String?
 }
@@ -41,6 +51,12 @@ struct APIConversationSummary: Codable, Identifiable {
     let updatedAt: String?
     let buyerId: String
     let sellerId: String
+    let safePaymentAcceptedAt: String?
+    let safePaymentAcceptedBy: String?
+    let safePaymentStatus: String?
+    let safePaymentAmount: Int64?
+    let safePaymentFee: Int64?
+    let safePaymentCurrency: String?
     let unreadCount: Int?
     let lastReadAt: String?
 }
@@ -100,6 +116,30 @@ private struct MarkConversationReadRequest: Codable {
     let userId: String
 }
 
+private struct AcceptSafePaymentRequest: Codable {
+    let userId: String
+}
+
+private struct SafePaymentIntentRequest: Codable {
+    let userId: String
+}
+
+private struct SafePaymentConfirmRequest: Codable {
+    let userId: String
+}
+
+struct SafePaymentAcceptResponse: Codable {
+    let conversation: APIConversation
+    let requiresOnboarding: Bool
+    let onboardingUrl: String?
+}
+
+struct SafePaymentIntentResponse: Codable {
+    let clientSecret: String
+    let publishableKey: String
+    let conversation: APIConversation
+}
+
 private struct CreateReviewRequest: Codable {
     let listingId: Int64
     let reviewerId: String
@@ -139,6 +179,7 @@ class APIService {
         latitude: Double?,
         longitude: Double?,
         price: Double,
+        offersSafePayment: Bool,
         userId: String,
         userName: String?,
         imageData: Data?
@@ -161,6 +202,7 @@ class APIService {
             ("latitude", latitude.map { String($0) } ?? ""),
             ("longitude", longitude.map { String($0) } ?? ""),
             ("price", String(price)),
+            ("offersSafePayment", String(offersSafePayment)),
             ("userId", userId),
             ("userName", userName ?? "")
         ]
@@ -242,6 +284,8 @@ class APIService {
         latitude: Double?,
         longitude: Double?,
         price: Double,
+        offersSafePayment: Bool,
+        isCompleted: Bool? = nil,
         userId: String,
         imageData: Data?
     ) async throws -> APIListing {
@@ -261,8 +305,15 @@ class APIService {
             ("latitude", latitude.map { String($0) } ?? ""),
             ("longitude", longitude.map { String($0) } ?? ""),
             ("price", String(price)),
+            ("offersSafePayment", String(offersSafePayment)),
             ("userId", userId)
         ]
+
+        if let isCompleted {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"isCompleted\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(isCompleted)\r\n".data(using: .utf8)!)
+        }
 
         for (name, value) in fields where !value.isEmpty {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -407,16 +458,25 @@ class APIService {
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
+            if let httpResponse = response as? HTTPURLResponse {
+                print("createReview failed: status=\(httpResponse.statusCode) body=\(String(data: data, encoding: .utf8) ?? "nil")")
+            }
             throw APIError.requestFailed
         }
 
-        let apiResponse = try JSONDecoder().decode(APIResponse<APIReview>.self, from: data)
+        print("createReview response: \(String(data: data, encoding: .utf8) ?? "nil")")
 
-        guard let review = apiResponse.data else {
-            throw APIError.invalidResponse
+        do {
+            let apiResponse = try JSONDecoder().decode(APIResponse<APIReview>.self, from: data)
+            guard let review = apiResponse.data else {
+                print("createReview: data is nil")
+                throw APIError.invalidResponse
+            }
+            return review
+        } catch {
+            print("createReview decode error: \(error)")
+            throw error
         }
-
-        return review
     }
 
     func getReviewsByReviewer(userId: String) async throws -> [APIReview] {
@@ -474,9 +534,17 @@ class APIService {
 
         let url = components.url!
         let (data, _) = try await URLSession.shared.data(from: url)
-        let apiResponse = try JSONDecoder().decode(APIResponse<[APIConversationSummary]>.self, from: data)
 
-        return apiResponse.data ?? []
+        do {
+            let apiResponse = try JSONDecoder().decode(APIResponse<[APIConversationSummary]>.self, from: data)
+            return apiResponse.data ?? []
+        } catch {
+            print("Failed to decode conversations: \(error)")
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("Raw JSON: \(jsonString.prefix(500))")
+            }
+            throw error
+        }
     }
 
     func getMessages(conversationId: Int64) async throws -> [APIMessage] {
@@ -513,6 +581,81 @@ class APIService {
         }
 
         return message
+    }
+
+    func acceptSafePayment(conversationId: Int64, userId: String) async throws -> SafePaymentAcceptResponse {
+        let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/accept")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            AcceptSafePaymentRequest(userId: userId)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<SafePaymentAcceptResponse>.self, from: data)
+        guard let payload = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return payload
+    }
+
+    func createSafePaymentIntent(conversationId: Int64, userId: String) async throws -> SafePaymentIntentResponse {
+        let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/intent")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SafePaymentIntentRequest(userId: userId)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<SafePaymentIntentResponse>.self, from: data)
+        guard let payload = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return payload
+    }
+
+    func confirmSafePayment(conversationId: Int64, userId: String) async throws -> APIConversation {
+        let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/confirm")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SafePaymentConfirmRequest(userId: userId)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<APIConversation>.self, from: data)
+        guard let conversation = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return conversation
     }
 
     func registerDeviceToken(userId: String, token: String) async throws {

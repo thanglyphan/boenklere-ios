@@ -194,4 +194,5 @@ extension Notification.Name {
     static let didReceiveChatNotification = Notification.Name("didReceiveChatNotification")
     static let didReceiveListingNotification = Notification.Name("didReceiveListingNotification")
     static let didMarkConversationRead = Notification.Name("didMarkConversationRead")
+    static let openMyListings = Notification.Name("openMyListings")
 }

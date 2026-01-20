@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Boenklere is an iOS marketplace app built with SwiftUI that enables users to browse, list, and transact items through a location-based map interface. Features include real-time messaging, Stripe payments, and user reviews.
 
+**Backend API:** The server-side API is located in the sibling folder `../boenklere-api`.
+
 ## Build Commands
 
 ```bash

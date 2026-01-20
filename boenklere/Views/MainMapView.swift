@@ -4,6 +4,7 @@ import CoreLocation
 import AuthenticationServices
 import PhotosUI
 import UIKit
+import StripePaymentSheet
 
 struct MainMapView: View {
     @EnvironmentObject var authManager: AuthenticationManager
@@ -12,6 +13,8 @@ struct MainMapView: View {
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var showProfileSheet = false
     @State private var showConversationsSheet = false
+    @State private var openMyListings = false
+    @State private var showAppleSignInSheet = false
     @State private var sheetDetent: PresentationDetent = .height(70)
     @State private var listings: [APIListing] = []
     @State private var selectedListing: APIListing?
@@ -101,6 +104,7 @@ struct MainMapView: View {
             SearchSheet(
                 sheetDetent: $sheetDetent,
                 showProfileSheet: $showProfileSheet,
+                showAppleSignInSheet: $showAppleSignInSheet,
                 listings: $listings,
                 selectedListing: $selectedListing,
                 deepLinkConversation: $deepLinkConversation,
@@ -113,7 +117,7 @@ struct MainMapView: View {
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                 .interactiveDismissDisabled()
                 .sheet(isPresented: $showProfileSheet) {
-                    ProfileSheet()
+                    ProfileSheet(openMyListings: $openMyListings)
                         .environmentObject(authManager)
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.hidden)
@@ -134,6 +138,10 @@ struct MainMapView: View {
         .onReceive(NotificationCenter.default.publisher(for: .didReceiveListingNotification)) { notification in
             guard let payload = notification.object as? ListingNotificationPayload else { return }
             handleListingNotification(payload)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openMyListings)) { _ in
+            openMyListings = true
+            showProfileSheet = true
         }
         .onChange(of: authManager.isAuthenticated) { _, _ in
             Task {
@@ -198,7 +206,7 @@ struct MainMapView: View {
                 if authManager.isAuthenticated {
                     showConversationsSheet = true
                 } else {
-                    authManager.signInWithApple()
+                    showAppleSignInSheet = true
                 }
             } label: {
                 ZStack(alignment: .topTrailing) {
@@ -230,7 +238,7 @@ struct MainMapView: View {
                 if authManager.isAuthenticated {
                     showProfileSheet = true
                 } else {
-                    authManager.signInWithApple()
+                    showAppleSignInSheet = true
                 }
             } label: {
                 Image(systemName: "person.fill")
@@ -463,7 +471,7 @@ struct MainMapView: View {
         guard !isLoadingConversationFromNotification else { return }
         guard let conversationId = pendingConversationId else { return }
         guard authManager.isAuthenticated, let userId = authManager.userIdentifier else {
-            authManager.signInWithApple()
+            showAppleSignInSheet = true
             return
         }
 
@@ -668,6 +676,10 @@ struct ListingRow: View {
     let onTap: () -> Void
     @State private var image: UIImage?
 
+    private var isSafePayment: Bool {
+        listing.offersSafePayment == true
+    }
+
     var body: some View {
         Button(action: onTap) {
         HStack(spacing: 12) {
@@ -688,17 +700,23 @@ struct ListingRow: View {
                     }
             }
 
-            // Title and description
+            // Description and status
             VStack(alignment: .leading, spacing: 4) {
-                Text(listing.title)
-                    .font(.body)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-
                 Text(listing.description)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    if isSafePayment {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+                    Text(isSafePayment ? "Trygg betaling" : "Betaling på eget ansvar")
+                        .font(.caption)
+                        .foregroundColor(isSafePayment ? .green : .secondary)
+                }
             }
 
             Spacer()
@@ -787,6 +805,7 @@ struct SearchSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Binding var sheetDetent: PresentationDetent
     @Binding var showProfileSheet: Bool
+    @Binding var showAppleSignInSheet: Bool
     @Binding var listings: [APIListing]
     @Binding var selectedListing: APIListing?
     @Binding var deepLinkConversation: APIConversationSummary?
@@ -840,7 +859,7 @@ struct SearchSheet: View {
 
                     Button {
                         if !authManager.isAuthenticated {
-                            authManager.signInWithApple()
+                            showAppleSignInSheet = true
                             return
                         }
                         if isCreatingListing {
@@ -893,6 +912,11 @@ struct SearchSheet: View {
                 .environmentObject(authManager)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
+        }
+        .sheet(isPresented: $showAppleSignInSheet) {
+            AppleSignInSheet()
+                .environmentObject(authManager)
+                .presentationDragIndicator(.visible)
         }
         .onChange(of: selectedListing) { _, newValue in
             if newValue != nil {
@@ -1415,6 +1439,7 @@ struct SearchSheet: View {
                 latitude: latitudeToUse,
                 longitude: longitudeToUse,
                 price: priceToSend,
+                offersSafePayment: offersSafePayment,
                 userId: userId,
                 userName: authManager.userName,
                 imageData: selectedImageData
@@ -1458,6 +1483,7 @@ struct SearchSheet: View {
 struct ProfileSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
+    @Binding var openMyListings: Bool
     @State private var nameDraft = ""
     @State private var isEditingName = false
     @State private var isSavingName = false
@@ -1471,6 +1497,11 @@ struct ProfileSheet: View {
     @State private var showAddressSuggestions = false
     @State private var addressIsConfirmed = false
     @State private var isSelectingAddressSuggestion = false
+    @State private var navigateToMyListings = false
+
+    init(openMyListings: Binding<Bool> = .constant(false)) {
+        self._openMyListings = openMyListings
+    }
 
     var body: some View {
         NavigationStack {
@@ -1493,6 +1524,16 @@ struct ProfileSheet: View {
                 .frame(maxHeight: .infinity)
 
             }
+            .background(
+                NavigationLink(
+                    destination: MyListingsSheet(showsBackButton: true, showsCloseButton: false)
+                        .environmentObject(authManager),
+                    isActive: $navigateToMyListings
+                ) {
+                    EmptyView()
+                }
+                .hidden()
+            )
             .toolbar(.hidden, for: .navigationBar)
         }
         .confirmationDialog("Logg ut?", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
@@ -1516,9 +1557,13 @@ struct ProfileSheet: View {
                     authManager.userLongitude != nil &&
                     !addressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
+            triggerMyListingsNavigation()
         }
         .onDisappear {
             addressSearch.search(query: "")
+        }
+        .onChange(of: openMyListings) { _, _ in
+            triggerMyListingsNavigation()
         }
         .onChange(of: nameDraft) { _, newValue in
             guard isEditingName else { return }
@@ -1849,6 +1894,13 @@ struct ProfileSheet: View {
         isEditingName = true
     }
 
+    private func triggerMyListingsNavigation() {
+        guard openMyListings else { return }
+        openMyListings = false
+        navigateToMyListings = true
+    }
+
+
     private func selectAddressSuggestion(_ result: MKLocalSearchCompletion) {
         let fullAddress = [result.title, result.subtitle]
             .filter { !$0.isEmpty }
@@ -2036,15 +2088,27 @@ struct ProfileSheet: View {
 struct MyListingsSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
+    let title: String
+    let emptyStateNoun: String
     @State private var listings: [APIListing] = []
+    @State private var safePaymentByListingId: [Int64: APIConversationSummary] = [:]
+    @State private var completingListingIds: Set<Int64> = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedListing: APIListing?
+    @State private var selectedCompletionListing: APIListing?
     @State private var editSheetDetent: PresentationDetent = .large
     let showsBackButton: Bool
     let showsCloseButton: Bool
 
-    init(showsBackButton: Bool = false, showsCloseButton: Bool = true) {
+    init(
+        title: String = "Mine annonser",
+        emptyStateNoun: String = "annonser",
+        showsBackButton: Bool = false,
+        showsCloseButton: Bool = true
+    ) {
+        self.title = title
+        self.emptyStateNoun = emptyStateNoun
         self.showsBackButton = showsBackButton
         self.showsCloseButton = showsCloseButton
     }
@@ -2052,6 +2116,12 @@ struct MyListingsSheet: View {
     @State private var pendingDeleteId: Int64?
     @State private var showDeleteConfirm = false
     @State private var selectedFilter: ListingFilter = .ongoing
+    @State private var pendingAcceptanceByListingId: [Int64: APIConversationSummary] = [:]
+    @State private var buyerNamesByUserId: [String: String] = [:]
+    @State private var acceptingConversationId: Int64?
+    @State private var paymentSheet: PaymentSheet?
+    @State private var showPaymentSheet = false
+    @State private var paymentConversation: APIConversationSummary?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2068,7 +2138,9 @@ struct MyListingsSheet: View {
             ScrollView {
                 VStack(spacing: 12) {
                     let visibleListings = filteredListings
-                    let emptyStateText = listings.isEmpty ? "Ingen annonser enda" : (selectedFilter == .completed ? "Ingen utførte annonser" : "Ingen pågående annonser")
+                    let emptyStateText = listings.isEmpty ?
+                        "Ingen \(emptyStateNoun) enda" :
+                        (selectedFilter == .completed ? "Ingen utførte \(emptyStateNoun)" : "Ingen pågående \(emptyStateNoun)")
 
                     if let errorMessage {
                         Text(errorMessage)
@@ -2094,8 +2166,51 @@ struct MyListingsSheet: View {
                     } else {
                         LazyVStack(spacing: 0) {
                             ForEach(visibleListings, id: \.id) { listing in
-                                ListingRow(listing: listing, userLocation: nil) {
-                                    selectedListing = listing
+                                VStack(spacing: 8) {
+                                    ListingRow(listing: listing, userLocation: nil) {
+                                        selectedListing = listing
+                                    }
+
+                                    if shouldShowAcceptButton(for: listing) {
+                                        let name = buyerName(for: listing)
+
+                                        VStack(spacing: 8) {
+                                            Text("\(name) har godtatt å utføre oppdraget")
+                                                .font(.subheadline)
+                                                .foregroundColor(.secondary)
+
+                                            Button {
+                                                if let listingId = listing.id,
+                                                   let conversation = pendingAcceptanceByListingId[listingId] {
+                                                    Task { await startPayment(for: conversation) }
+                                                }
+                                            } label: {
+                                                BoenklereActionButtonLabel(
+                                                    title: "Godta \(name)",
+                                                    systemImage: "checkmark.circle.fill"
+                                                )
+                                            }
+                                            .buttonStyle(.plain)
+                                            .disabled(acceptingConversationId != nil)
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.bottom, 4)
+                                    }
+
+                                    if shouldShowCompletePaymentButton(for: listing) {
+                                        Button {
+                                            Task { await completeListingAndReview(listing) }
+                                        } label: {
+                                            BoenklereActionButtonLabel(
+                                                title: "Fullfør og utbetal \(formattedSafePaymentPrice(for: listing))",
+                                                systemImage: "checkmark.seal.fill"
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(isCompleting(listing))
+                                        .padding(.horizontal, 16)
+                                        .padding(.bottom, 4)
+                                    }
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     if let listingId = listing.id {
@@ -2140,6 +2255,23 @@ struct MyListingsSheet: View {
             .presentationDetents([.large], selection: $editSheetDetent)
             .presentationDragIndicator(.hidden)
         }
+        .sheet(item: $selectedCompletionListing) { listing in
+            CompleteListingSheet(
+                listing: listing,
+                onReviewSaved: { updatedListing in
+                    if let updatedListing,
+                       let index = listings.firstIndex(where: { $0.id == updatedListing.id }) {
+                        listings[index] = updatedListing
+                    }
+                    if let listingId = listing.id {
+                        safePaymentByListingId[listingId] = nil
+                    }
+                }
+            )
+            .environmentObject(authManager)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
+        }
         .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Slett annonse", role: .destructive) {
                 if let listingId = pendingDeleteId {
@@ -2152,6 +2284,11 @@ struct MyListingsSheet: View {
             }
         } message: {
             Text("Dette kan ikke angres.")
+        }
+        .sheet(isPresented: $showPaymentSheet) {
+            if let paymentSheet {
+                PaymentSheetPresenter(paymentSheet: paymentSheet, onCompletion: handlePaymentResult)
+            }
         }
         .toolbar(.hidden, for: .navigationBar)
         .task {
@@ -2193,7 +2330,7 @@ struct MyListingsSheet: View {
                     }
                 }
 
-                Text("Mine annonser")
+                Text(title)
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
@@ -2223,20 +2360,41 @@ struct MyListingsSheet: View {
     @MainActor
     private func loadListings() async {
         guard let userId = authManager.userIdentifier else { return }
+        guard !isLoading else { return }
 
         isLoading = true
         errorMessage = nil
+
+        // Fetch listings first
         do {
             listings = try await APIService.shared.getListings(userId: userId)
         } catch is CancellationError {
+            isLoading = false
             return
         } catch {
             if let urlError = error as? URLError, urlError.code == .cancelled {
+                isLoading = false
                 return
             }
             errorMessage = "Kunne ikke hente annonser"
+            isLoading = false
+            return
         }
+
         isLoading = false
+
+        // Fetch conversations separately (don't fail if this fails)
+        if let conversationsResult = try? await APIService.shared.getConversations(userId: userId) {
+            safePaymentByListingId = buildSafePaymentMap(
+                conversations: conversationsResult,
+                userId: userId
+            )
+            pendingAcceptanceByListingId = buildPendingAcceptanceMap(
+                conversations: conversationsResult,
+                userId: userId
+            )
+            await loadBuyerNames(for: Array(pendingAcceptanceByListingId.values))
+        }
     }
 
     @MainActor
@@ -2252,7 +2410,183 @@ struct MyListingsSheet: View {
         }
         deletingListingIds.remove(id)
     }
+
+    private func shouldShowCompletePaymentButton(for listing: APIListing) -> Bool {
+        guard listing.isCompleted != true else { return false }
+        guard listing.offersSafePayment == true else { return false }
+        guard let listingId = listing.id else { return false }
+        return safePaymentByListingId[listingId] != nil
+    }
+
+    private func formattedSafePaymentPrice(for listing: APIListing) -> String {
+        guard let listingId = listing.id,
+              let conversation = safePaymentByListingId[listingId] else {
+            return "\(max(0, Int(listing.price))) kr"
+        }
+
+        if let amountMinor = conversation.safePaymentAmount {
+            let amountValue = Double(amountMinor) / 100.0
+            let formatted = amountValue.truncatingRemainder(dividingBy: 1) == 0
+                ? String(Int(amountValue))
+                : String(format: "%.2f", amountValue)
+            return "\(formatted) kr"
+        }
+
+        return "\(max(0, Int(listing.price))) kr"
+    }
+
+    private func isCompleting(_ listing: APIListing) -> Bool {
+        guard let listingId = listing.id else { return false }
+        return completingListingIds.contains(listingId)
+    }
+
+    @MainActor
+    private func completeListingAndReview(_ listing: APIListing) async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard let listingId = listing.id else { return }
+
+        completingListingIds.insert(listingId)
+        errorMessage = nil
+
+        do {
+            let updated = try await APIService.shared.updateListing(
+                listingId: listingId,
+                title: listing.title,
+                description: listing.description,
+                address: listing.address,
+                latitude: listing.latitude,
+                longitude: listing.longitude,
+                price: listing.price,
+                offersSafePayment: listing.offersSafePayment ?? false,
+                isCompleted: true,
+                userId: userId,
+                imageData: nil
+            )
+            if let index = listings.firstIndex(where: { $0.id == updated.id }) {
+                listings[index] = updated
+            }
+            safePaymentByListingId[listingId] = nil
+            selectedCompletionListing = updated
+        } catch {
+            errorMessage = "Kunne ikke fullføre oppdraget"
+        }
+
+        completingListingIds.remove(listingId)
+    }
+
+    private func buildSafePaymentMap(
+        conversations: [APIConversationSummary],
+        userId: String
+    ) -> [Int64: APIConversationSummary] {
+        var map: [Int64: APIConversationSummary] = [:]
+        for conversation in conversations {
+            guard conversation.sellerId == userId else { continue }
+            guard conversation.safePaymentStatus == "held" else { continue }
+            map[conversation.listingId] = conversation
+        }
+        return map
+    }
+
+    private func buildPendingAcceptanceMap(
+        conversations: [APIConversationSummary],
+        userId: String
+    ) -> [Int64: APIConversationSummary] {
+        var map: [Int64: APIConversationSummary] = [:]
+        for conversation in conversations {
+            guard conversation.sellerId == userId else { continue }
+            guard conversation.safePaymentAcceptedBy != nil else { continue }
+            guard conversation.safePaymentStatus != "held" else { continue }
+            map[conversation.listingId] = conversation
+        }
+        return map
+    }
+
+    @MainActor
+    private func loadBuyerNames(for conversations: [APIConversationSummary]) async {
+        let buyerIds = Set(conversations.map { $0.buyerId })
+        for buyerId in buyerIds {
+            if buyerNamesByUserId[buyerId] == nil {
+                if let user = try? await APIService.shared.getUser(userId: buyerId) {
+                    buyerNamesByUserId[buyerId] = user.name
+                }
+            }
+        }
+    }
+
+    private func shouldShowAcceptButton(for listing: APIListing) -> Bool {
+        guard listing.isCompleted != true else { return false }
+        guard let listingId = listing.id else { return false }
+        return pendingAcceptanceByListingId[listingId] != nil
+    }
+
+    private func buyerName(for listing: APIListing) -> String {
+        guard let listingId = listing.id,
+              let conversation = pendingAcceptanceByListingId[listingId] else {
+            return "Bruker"
+        }
+        return buyerNamesByUserId[conversation.buyerId] ?? "Bruker"
+    }
+
+    @MainActor
+    private func startPayment(for conversation: APIConversationSummary) async {
+        guard let userId = authManager.userIdentifier else { return }
+
+        acceptingConversationId = conversation.id
+        paymentConversation = conversation
+
+        do {
+            let response = try await APIService.shared.createSafePaymentIntent(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            StripeAPI.defaultPublishableKey = response.publishableKey
+            var configuration = PaymentSheet.Configuration()
+            configuration.merchantDisplayName = "Boenklere"
+            paymentSheet = PaymentSheet(
+                paymentIntentClientSecret: response.clientSecret,
+                configuration: configuration
+            )
+            showPaymentSheet = true
+        } catch {
+            errorMessage = "Kunne ikke starte betaling"
+        }
+        acceptingConversationId = nil
+    }
+
+    private func handlePaymentResult(_ result: PaymentSheetResult) {
+        switch result {
+        case .completed:
+            if let conversation = paymentConversation {
+                Task { await confirmPayment(for: conversation) }
+            }
+        case .failed:
+            errorMessage = "Betaling feilet"
+        case .canceled:
+            break
+        }
+        showPaymentSheet = false
+        paymentSheet = nil
+        paymentConversation = nil
+    }
+
+    @MainActor
+    private func confirmPayment(for conversation: APIConversationSummary) async {
+        guard let userId = authManager.userIdentifier else { return }
+
+        do {
+            _ = try await APIService.shared.confirmSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            pendingAcceptanceByListingId[conversation.listingId] = nil
+            safePaymentByListingId[conversation.listingId] = conversation
+            await loadListings()
+        } catch {
+            errorMessage = "Kunne ikke bekrefte betalingen"
+        }
+    }
 }
+
 
 private struct ProfileSubpageHeader: View {
     let title: String
@@ -2357,6 +2691,7 @@ private struct RatingsSheet: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -2826,7 +3161,7 @@ private struct NotificationsSheet: View {
     }
 }
 
-private enum TermsDocument: String, Identifiable {
+enum TermsDocument: String, Identifiable {
     case termsOfUse
     case privacy
 
@@ -3023,7 +3358,7 @@ private struct TermsSheet: View {
     }
 }
 
-private struct TermsModal: View {
+struct TermsModal: View {
     let document: TermsDocument
     @Environment(\.dismiss) var dismiss
 
@@ -3176,6 +3511,7 @@ struct EditListingSheet: View {
     @State private var isEditingAddress = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var offersSafePayment = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedImage: Image?
     @State private var selectedImageData: Data?
@@ -3195,6 +3531,7 @@ struct EditListingSheet: View {
                     titleSection
                     descriptionSection
                     priceSection
+                    safePaymentSection
                     addressSection
 
                     if let errorMessage {
@@ -3269,6 +3606,7 @@ struct EditListingSheet: View {
             draftLatitude = listing.latitude
             draftLongitude = listing.longitude
             isCompleted = listing.isCompleted ?? false
+            offersSafePayment = listing.offersSafePayment ?? false
             loadExistingImage()
         }
         .onChange(of: selectedPhotoItem) { _, newItem in
@@ -3433,6 +3771,17 @@ struct EditListingSheet: View {
         }
     }
 
+    private var safePaymentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Trygg betaling")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            Toggle("Tilby Trygg betaling", isOn: $offersSafePayment)
+                .toggleStyle(.switch)
+        }
+    }
+
     private var addressSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             fieldHeader(title: "Adresse", isEditing: isEditingAddress) {
@@ -3577,6 +3926,8 @@ struct EditListingSheet: View {
                 latitude: draftLatitude,
                 longitude: draftLongitude,
                 price: priceToSave,
+                offersSafePayment: offersSafePayment,
+                isCompleted: nil,
                 userId: userId,
                 imageData: selectedImageData
             )
@@ -3674,7 +4025,7 @@ private struct ReviewCandidate: Identifiable {
     let name: String
 }
 
-private struct CompleteListingSheet: View {
+struct CompleteListingSheet: View {
     let listing: APIListing
     let onReviewSaved: (APIListing?) -> Void
     @EnvironmentObject var authManager: AuthenticationManager
@@ -3935,12 +4286,14 @@ struct ListingDetailSheet: View {
     let listing: APIListing
     @Binding var sheetDetent: PresentationDetent
     let userLocation: CLLocation?
+    var showsMessageAction: Bool = true
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
     @State private var image: UIImage?
     @State private var driveTimeText: String?
     @State private var showNavigationOptions = false
     @State private var showChat = false
+    @State private var showAppleSignInSheet = false
 
     private var isCollapsed: Bool {
         sheetDetent == .height(70)
@@ -3949,6 +4302,14 @@ struct ListingDetailSheet: View {
     private var isOwner: Bool {
         guard let userId = authManager.userIdentifier else { return false }
         return listing.userId == userId
+    }
+
+    private var showsMessageButton: Bool {
+        showsMessageAction
+    }
+
+    private var isSafePayment: Bool {
+        listing.offersSafePayment == true
     }
 
     private var displayUserName: String {
@@ -4022,13 +4383,16 @@ struct ListingDetailSheet: View {
                         .padding(.bottom, 3)
 
                     HStack {
-                        if isCollapsed {
-                            Text(listing.title)
-                                .font(.title3)
+                        HStack(spacing: 6) {
+                            if isSafePayment {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.subheadline)
+                                    .foregroundColor(.green)
+                            }
+                            Text(isSafePayment ? "Trygg betaling" : "Betaling på eget ansvar")
+                                .font(.subheadline)
                                 .fontWeight(.semibold)
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+                                .foregroundColor(isSafePayment ? .primary : .secondary)
                         }
 
                         Spacer()
@@ -4068,16 +4432,21 @@ struct ListingDetailSheet: View {
                                             .frame(height: actionButtonHeight)
                                     }
 
-                                    Button {
-                                        if authManager.isAuthenticated {
-                                            showChat = true
-                                        } else {
-                                            authManager.signInWithApple()
+                                    if showsMessageButton {
+                                        Button {
+                                            if authManager.isAuthenticated {
+                                                showChat = true
+                                            } else {
+                                                showAppleSignInSheet = true
+                                            }
+                                        } label: {
+                                            BoenklereActionButtonLabel(title: "Send melding", systemImage: "bubble.left.and.bubble.right.fill", height: actionButtonHeight)
                                         }
-                                    } label: {
-                                        BoenklereActionButtonLabel(title: "Send melding", systemImage: "bubble.left.and.bubble.right.fill", height: actionButtonHeight)
+                                        .buttonStyle(.plain)
+                                    } else {
+                                        Color.clear
+                                            .frame(height: actionButtonHeight)
                                     }
-                                    .buttonStyle(.plain)
                                 }
                                 .frame(height: actionButtonsHeight)
                             }
@@ -4089,12 +4458,30 @@ struct ListingDetailSheet: View {
                                 .cornerRadius(16)
                         }
 
-                    // Title and Price
-                    HStack(alignment: .top) {
-                        Text(listing.title)
-                            .font(.title2)
-                            .fontWeight(.bold)
+                    // Description
+                    Text(listing.title)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+
+                    // Description
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Beskrivelse")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Text(listing.description)
+                            .font(.body)
+                    }
+
+                    // Price
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top) {
+                            Text("Oppgitt oppdragspris")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+
                             Spacer()
+
                             if listing.price > 0 {
                                 Text("\(Int(listing.price)) kr")
                                     .font(.title2)
@@ -4108,13 +4495,8 @@ struct ListingDetailSheet: View {
                             }
                         }
 
-                    // Description
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Beskrivelse")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Text(listing.description)
-                            .font(.body)
+                        Divider()
+                            .padding(.top, 8)
                     }
 
                     if let distanceText {
@@ -4189,6 +4571,11 @@ struct ListingDetailSheet: View {
                 openGoogleMaps()
             }
             Button("Avbryt", role: .cancel) {}
+        }
+        .sheet(isPresented: $showAppleSignInSheet) {
+            AppleSignInSheet()
+                .environmentObject(authManager)
+                .presentationDragIndicator(.visible)
         }
     }
 

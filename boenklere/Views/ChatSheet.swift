@@ -1,4 +1,6 @@
 import SwiftUI
+import SafariServices
+import StripePaymentSheet
 import UIKit
 
 struct ChatSheet: View {
@@ -17,6 +19,18 @@ struct ChatSheet: View {
     @State private var listingSheetDetent: PresentationDetent = .large
     @State private var showUserReviews = false
     @State private var didMarkRead = false
+    @State private var showEditListingSheet = false
+    @State private var listingOverride: APIListing?
+    @State private var isAcceptingTask = false
+    @State private var didAcceptSafePayment = false
+    @State private var showOnboarding = false
+    @State private var onboardingUrl: URL?
+    @State private var shouldRetryAcceptAfterOnboarding = false
+    @State private var paymentSheet: PaymentSheet?
+    @State private var showPaymentSheet = false
+    @State private var isStartingPayment = false
+    @State private var showCompleteSheet = false
+    @State private var isCompletingListing = false
 
     var body: some View {
         ZStack {
@@ -26,18 +40,35 @@ struct ChatSheet: View {
 
             VStack(spacing: 0) {
                 ChatHeader(
-                    title: listing.title,
+                    title: currentListing.title,
                     isModalStyle: isModalStyle
                 ) {
                     dismiss()
                 }
 
-                ListingRow(listing: listing, userLocation: nil) {
-                    showListingSheet = true
+                ListingRow(listing: currentListing, userLocation: nil) {
+                    if isOwner {
+                        showEditListingSheet = true
+                    } else {
+                        showListingSheet = true
+                    }
                 }
 
-                Divider()
-                    .padding(.leading, 76)
+                if shouldShowSafePaymentAction {
+                    acceptActionSection
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                } else if shouldShowSafePaymentAcceptedInfo {
+                    VStack(spacing: 8) {
+                        acceptedInfoSection
+
+                        if shouldShowCompletePaymentButton {
+                            completePaymentButton
+                        }
+                    }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                }
 
                 if !authManager.isAuthenticated {
                     VStack(spacing: 12) {
@@ -55,6 +86,8 @@ struct ChatSheet: View {
                                 ForEach(messageRows) { row in
                                     MessageBubble(
                                         message: row.message,
+                                        bodyText: row.bodyText,
+                                        isSystem: row.isSystem,
                                         isOutgoing: row.isOutgoing,
                                         avatarName: row.isOutgoing ? nil : displayUserName,
                                         showsAvatar: row.showAvatar,
@@ -117,22 +150,199 @@ struct ChatSheet: View {
         }
         .sheet(isPresented: $showListingSheet) {
             ListingDetailSheet(
-                listing: listing,
+                listing: currentListing,
                 sheetDetent: $listingSheetDetent,
-                userLocation: nil
+                userLocation: nil,
+                showsMessageAction: false
             )
             .environmentObject(authManager)
             .presentationDetents([.large], selection: $listingSheetDetent)
             .presentationDragIndicator(.hidden)
         }
+        .sheet(isPresented: $showEditListingSheet) {
+            EditListingSheet(
+                listing: currentListing,
+                onUpdated: { updated in
+                    listingOverride = updated
+                },
+                onDeleted: { _ in }
+            )
+            .environmentObject(authManager)
+            .presentationDetents([.large])
+            .presentationDragIndicator(.hidden)
+        }
         .sheet(isPresented: $showUserReviews) {
-            UserReviewsSheet(userId: listing.userId, userName: displayUserName)
+            UserReviewsSheet(userId: currentListing.userId, userName: displayUserName)
+        }
+        .sheet(isPresented: $showOnboarding) {
+            if let url = onboardingUrl {
+                SafariView(url: url) {
+                    Task { await retryAcceptAfterOnboarding() }
+                }
+            }
+        }
+        .sheet(isPresented: $showPaymentSheet) {
+            if let paymentSheet {
+                PaymentSheetPresenter(paymentSheet: paymentSheet, onCompletion: handlePaymentSheetResult)
+            }
+        }
+        .sheet(isPresented: $showCompleteSheet) {
+            CompleteListingSheet(
+                listing: currentListing,
+                onReviewSaved: { updatedListing in
+                    if let updatedListing {
+                        listingOverride = updatedListing
+                    }
+                }
+            )
+            .environmentObject(authManager)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
         }
     }
 
+    private var currentListing: APIListing {
+        listingOverride ?? listing
+    }
+
+    private var isOwner: Bool {
+        guard let userId = authManager.userIdentifier else { return false }
+        return currentListing.userId == userId
+    }
+
     private var displayUserName: String {
-        let name = listing.userName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = currentListing.userName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? "Bruker" : name
+    }
+
+    private var isSafePayment: Bool {
+        currentListing.offersSafePayment == true
+    }
+
+    private var hasExecutorAccepted: Bool {
+        if didAcceptSafePayment {
+            return true
+        }
+        if conversation?.safePaymentAcceptedAt != nil {
+            return true
+        }
+        return messages.contains { isExecutorAcceptanceMessage($0.body) }
+    }
+
+    private var safePaymentStatus: String? {
+        conversation?.safePaymentStatus
+    }
+
+    private var isPaymentStarted: Bool {
+        guard let status = safePaymentStatus else { return false }
+        return status == "held" || status == "released"
+    }
+
+    private var isPaymentHeld: Bool {
+        safePaymentStatus == "held"
+    }
+
+    private var shouldShowSafePaymentAction: Bool {
+        guard authManager.isAuthenticated, isSafePayment else { return false }
+        if isOwner {
+            return hasExecutorAccepted && !isPaymentStarted
+        }
+        return !hasExecutorAccepted
+    }
+
+    private var shouldShowSafePaymentAcceptedInfo: Bool {
+        guard authManager.isAuthenticated, isSafePayment else { return false }
+        if isOwner {
+            return isPaymentStarted
+        }
+        return hasExecutorAccepted
+    }
+
+    private var otherUserLabel: String {
+        guard let currentUserId = authManager.userIdentifier else { return "Bruker" }
+        guard let conversation else { return "Bruker" }
+        let otherUserId = currentUserId == conversation.buyerId ? conversation.sellerId : conversation.buyerId
+        return "Bruker \(otherUserId.suffix(4))"
+    }
+
+    private var acceptActionTitle: String {
+        if isOwner {
+            return "Godta \(otherUserLabel)"
+        }
+        let priceValue = max(0, Int(currentListing.price))
+        return "Godta oppdraget for \(priceValue) kr"
+    }
+
+    private var acceptActionPrimaryMessage: String {
+        if isOwner {
+            return "Når du godtar, betaler du inn beløpet til Trygg betaling. Pengene holdes trygt til jobben er godkjent."
+        }
+        return "Når du godtar, betaler oppdragsgiver inn beløpet til Trygg betaling. Du får utbetaling når jobben er godkjent."
+    }
+
+    private var acceptActionSecondaryMessage: String {
+        "Trygg betaling er en valgfri tjeneste som gir ekstra sikkerhet for begge parter. Det er helt opp til dere om dere ønsker å bruke denne når dere inngår avtale."
+    }
+
+    private var acceptActionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(acceptActionPrimaryMessage)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(acceptActionSecondaryMessage)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                if isOwner {
+                    Task { await handleOwnerPaymentAction() }
+                } else {
+                    Task { await handleAcceptAction() }
+                }
+            } label: {
+                BoenklereActionButtonLabel(title: acceptActionTitle, systemImage: "checkmark.seal.fill")
+            }
+            .buttonStyle(.plain)
+            .disabled(isAcceptActionDisabled)
+        }
+    }
+
+    private var acceptedInfoSection: some View {
+        safePaymentInfoBox {
+            if isPaymentStarted {
+                if isOwner {
+                    ownerSafePaymentInfoText
+                } else {
+                    executorSafePaymentInfoText
+                }
+            } else {
+                Text("Du har godtatt oppdraget, venter på godkjenning av \(ownerDisplayName)")
+            }
+        }
+    }
+
+    private var shouldShowCompletePaymentButton: Bool {
+        guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
+        guard isPaymentHeld else { return false }
+        return currentListing.isCompleted != true
+    }
+
+    private var completePaymentButton: some View {
+        Button {
+            Task { await completeListingAndReview() }
+        } label: {
+            BoenklereActionButtonLabel(
+                title: "Fullfør og utbetal \(safePaymentPriceText)",
+                systemImage: "checkmark.seal.fill"
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isCompletingListing)
     }
 
     private var messageRows: [MessageRow] {
@@ -157,7 +367,7 @@ struct ChatSheet: View {
         isLoading = true
         errorMessage = nil
 
-        guard let listingId = listing.id else {
+        guard let listingId = currentListing.id else {
             errorMessage = "Kunne ikke starte chat"
             isLoading = false
             return
@@ -236,6 +446,222 @@ struct ChatSheet: View {
         guard let url = APIService.shared.webSocketURL(conversationId: conversationId, userId: userId) else { return }
         socketClient.connect(conversationId: conversationId, userId: userId, url: url)
     }
+
+    @MainActor
+    private func handleAcceptAction() async {
+        guard !isAcceptingTask else { return }
+        guard authManager.isAuthenticated else { return }
+        if isOwner {
+            return
+        }
+        guard let conversation else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isAcceptingTask = true
+        print("Stripe: accept start conversationId=\(conversation.id) userId=\(userId)")
+        do {
+            let response = try await APIService.shared.acceptSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            if response.requiresOnboarding {
+                if let urlString = response.onboardingUrl,
+                   let url = URL(string: urlString) {
+                    print("Stripe: onboarding required conversationId=\(conversation.id)")
+                    onboardingUrl = url
+                    shouldRetryAcceptAfterOnboarding = true
+                    showOnboarding = true
+                } else {
+                    errorMessage = "Kunne ikke starte Stripe onboarding"
+                }
+            } else {
+                self.conversation = response.conversation
+                didAcceptSafePayment = true
+                print("Stripe: accept completed conversationId=\(conversation.id)")
+            }
+        } catch {
+            errorMessage = "Kunne ikke oppdatere oppdraget"
+            print("Stripe: accept failed conversationId=\(conversation.id) error=\(error)")
+        }
+        isAcceptingTask = false
+    }
+
+    @MainActor
+    private func retryAcceptAfterOnboarding() async {
+        guard shouldRetryAcceptAfterOnboarding else { return }
+        shouldRetryAcceptAfterOnboarding = false
+        await handleAcceptAction()
+    }
+
+    @MainActor
+    private func handleOwnerPaymentAction() async {
+        guard authManager.isAuthenticated else { return }
+        guard let conversation else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isStartingPayment = true
+        print("Stripe: payment start conversationId=\(conversation.id) userId=\(userId)")
+        do {
+            let response = try await APIService.shared.createSafePaymentIntent(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            self.conversation = response.conversation
+            StripeAPI.defaultPublishableKey = response.publishableKey
+            print("Stripe: payment sheet ready conversationId=\(conversation.id)")
+            var configuration = PaymentSheet.Configuration()
+            configuration.merchantDisplayName = "Boenklere"
+            paymentSheet = PaymentSheet(
+                paymentIntentClientSecret: response.clientSecret,
+                configuration: configuration
+            )
+            showPaymentSheet = true
+        } catch {
+            errorMessage = "Kunne ikke starte betaling"
+            print("Stripe: payment start failed conversationId=\(conversation.id) error=\(error)")
+        }
+        isStartingPayment = false
+    }
+
+    private func handlePaymentSheetResult(_ result: PaymentSheetResult) {
+        switch result {
+        case .completed:
+            print("Stripe: payment sheet completed")
+            Task { await confirmSafePayment() }
+        case .failed:
+            errorMessage = "Betaling feilet"
+            print("Stripe: payment sheet failed")
+        case .canceled:
+            print("Stripe: payment sheet canceled")
+            break
+        }
+        showPaymentSheet = false
+        paymentSheet = nil
+    }
+
+    @MainActor
+    private func confirmSafePayment() async {
+        guard let conversation else { return }
+        guard let userId = authManager.userIdentifier else { return }
+        do {
+            let updated = try await APIService.shared.confirmSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            self.conversation = updated
+            print("Stripe: payment confirmed conversationId=\(conversation.id) status=\(updated.safePaymentStatus ?? "nil")")
+        } catch {
+            errorMessage = "Kunne ikke bekrefte betalingen"
+            print("Stripe: payment confirm failed conversationId=\(conversation.id) error=\(error)")
+        }
+    }
+
+    private var isAcceptActionDisabled: Bool {
+        isAcceptingTask || isStartingPayment || (!isOwner && conversation == nil)
+    }
+
+    private var ownerDisplayName: String {
+        let name = currentListing.userName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "oppdragseier" : name
+    }
+
+    private var executorDisplayName: String {
+        let name = otherUserLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "oppdragstaker" : name
+    }
+
+    private var executorSafePaymentInfoText: some View {
+        Text(
+            "Dere har begge godtatt å utføre oppdraget med Trygg betaling. Du mottar utbetaling når \(ownerDisplayName) markerer oppdraget som utført"
+        )
+    }
+
+    private var ownerSafePaymentInfoText: some View {
+        let info = ownerSafePaymentInfoAttributedString(executorName: executorDisplayName)
+        return Text(info)
+            .environment(\.openURL, OpenURLAction { url in
+                if url.scheme == "boenklere", url.host == "my-listings" {
+                    openMyListings()
+                    return .handled
+                }
+                return .systemAction
+            })
+    }
+
+    private var safePaymentPriceText: String {
+        if let amountMinor = conversation?.safePaymentAmount {
+            let amountValue = Double(amountMinor) / 100.0
+            let formatted = amountValue.truncatingRemainder(dividingBy: 1) == 0
+                ? String(Int(amountValue))
+                : String(format: "%.2f", amountValue)
+            return "\(formatted) kr"
+        }
+        let priceValue = max(0, Int(currentListing.price))
+        return "\(priceValue) kr"
+    }
+
+    private func ownerSafePaymentInfoAttributedString(executorName: String) -> AttributedString {
+        let linkToken = "[[MY_LISTINGS]]"
+        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken)."
+        var info = AttributedString(raw)
+        if let range = info.range(of: linkToken) {
+            var link = AttributedString("Mine annonser")
+            link.font = .caption.bold()
+            link.foregroundColor = .secondary
+            link.link = URL(string: "boenklere://my-listings")
+            info.replaceSubrange(range, with: link)
+        }
+        return info
+    }
+
+    private func safePaymentInfoBox(@ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            content()
+        }
+        .font(.caption)
+        .foregroundColor(.secondary)
+        .lineSpacing(2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func openMyListings() {
+        NotificationCenter.default.post(name: .openMyListings, object: nil)
+    }
+
+    @MainActor
+    private func completeListingAndReview() async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard let listingId = currentListing.id else { return }
+
+        isCompletingListing = true
+        errorMessage = nil
+
+        do {
+            let updated = try await APIService.shared.updateListing(
+                listingId: listingId,
+                title: currentListing.title,
+                description: currentListing.description,
+                address: currentListing.address,
+                latitude: currentListing.latitude,
+                longitude: currentListing.longitude,
+                price: currentListing.price,
+                offersSafePayment: currentListing.offersSafePayment ?? false,
+                isCompleted: true,
+                userId: userId,
+                imageData: nil
+            )
+            listingOverride = updated
+            showCompleteSheet = true
+        } catch {
+            errorMessage = "Kunne ikke fullføre oppdraget"
+        }
+
+        isCompletingListing = false
+    }
+
 }
 
 struct ConversationsSheet: View {
@@ -371,7 +797,7 @@ struct ConversationsSheet: View {
             let sorted = groupConversations.sorted { ($0.updatedAt ?? "") > ($1.updatedAt ?? "") }
             let listingTitle = sorted.first?.listingTitle ?? "Annonse"
             let listingImageUrl = sorted.first?.listingImageUrl
-            let lastMessage = sorted.first?.lastMessage
+        let lastMessage = stripSystemMessage(sorted.first?.lastMessage)
             let updatedAt = sorted.first?.updatedAt
             let hasUnread = sorted.contains { ($0.unreadCount ?? 0) > 0 }
             return ListingConversationGroup(
@@ -389,7 +815,7 @@ struct ConversationsSheet: View {
     }
 
     private func hasMessages(_ conversation: APIConversationSummary) -> Bool {
-        guard let lastMessage = conversation.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+        guard let lastMessage = stripSystemMessage(conversation.lastMessage) else {
             return false
         }
         return !lastMessage.isEmpty
@@ -415,6 +841,7 @@ struct ConversationsSheet: View {
             if let urlError = error as? URLError, urlError.code == .cancelled {
                 return
             }
+            print("Failed to load conversations: \(error)")
             errorMessage = "Kunne ikke hente meldinger"
         }
         isLoading = false
@@ -596,7 +1023,7 @@ private struct ListingConversationDetailRow: View {
                     .foregroundColor(.primary)
                     .lineLimit(1)
 
-                if let lastMessage = conversation.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+                if let lastMessage = stripSystemMessage(conversation.lastMessage),
                    !lastMessage.isEmpty {
                     Text(lastMessage)
                         .font(.subheadline)
@@ -1035,7 +1462,7 @@ private struct ConversationRow: View {
                     .foregroundColor(.primary)
                     .lineLimit(1)
 
-                if let lastMessage = conversation.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+                if let lastMessage = stripSystemMessage(conversation.lastMessage),
                    !lastMessage.isEmpty {
                     Text(lastMessage)
                         .font(.subheadline)
@@ -1151,11 +1578,29 @@ struct ConversationChatSheet: View {
     @State private var listing: APIListing?
     @State private var isLoadingListing = false
     @State private var showListingSheet = false
+    @State private var showEditListingSheet = false
     @State private var listingSheetDetent: PresentationDetent = .large
     @State private var showUserReviews = false
     @State private var otherUserName: String?
     @State private var firstUnreadMessageId: Int64?
     @State private var didMarkRead = false
+    @State private var isAcceptingTask = false
+    @State private var didAcceptSafePayment = false
+    @State private var safePaymentStatusOverride: String?
+    @State private var showOnboarding = false
+    @State private var onboardingUrl: URL?
+    @State private var shouldRetryAcceptAfterOnboarding = false
+    @State private var paymentSheet: PaymentSheet?
+    @State private var showPaymentSheet = false
+    @State private var isStartingPayment = false
+    @State private var showCompleteSheet = false
+    @State private var isCompletingListing = false
+    @State private var showReviewOwnerSheet = false
+    @State private var hasReviewedOwner = false
+    @State private var isCheckingReview = false
+    @State private var reviewRating: Int = 0
+    @State private var reviewComment: String = ""
+    @State private var isSubmittingReview = false
 
     var body: some View {
         ZStack {
@@ -1173,11 +1618,33 @@ struct ConversationChatSheet: View {
 
                 if let listing {
                     ListingRow(listing: listing, userLocation: nil) {
-                        showListingSheet = true
+                        if isOwner {
+                            showEditListingSheet = true
+                        } else {
+                            showListingSheet = true
+                        }
                     }
 
-                    Divider()
-                        .padding(.leading, 76)
+                    if shouldShowSafePaymentAction {
+                        acceptActionSection
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                    } else if shouldShowSafePaymentAcceptedInfo {
+                        VStack(spacing: 8) {
+                            acceptedInfoSection
+
+                            if shouldShowCompletePaymentButton {
+                                completePaymentButton
+                            }
+
+                            if shouldShowReviewOwnerButton {
+                                reviewOwnerButton
+                            }
+                        }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                    }
+
                 } else if isLoadingListing {
                     ProgressView()
                         .padding(.vertical, 8)
@@ -1202,6 +1669,8 @@ struct ConversationChatSheet: View {
                                     }
                                     MessageBubble(
                                         message: row.message,
+                                        bodyText: row.bodyText,
+                                        isSystem: row.isSystem,
                                         isOutgoing: row.isOutgoing,
                                         avatarName: row.isOutgoing ? nil : displayOtherName,
                                         showsAvatar: row.showAvatar,
@@ -1266,10 +1735,25 @@ struct ConversationChatSheet: View {
                 ListingDetailSheet(
                     listing: listing,
                     sheetDetent: $listingSheetDetent,
-                    userLocation: nil
+                    userLocation: nil,
+                    showsMessageAction: false
                 )
                 .environmentObject(authManager)
                 .presentationDetents([.large], selection: $listingSheetDetent)
+                .presentationDragIndicator(.hidden)
+            }
+        }
+        .sheet(isPresented: $showEditListingSheet) {
+            if let listing {
+                EditListingSheet(
+                    listing: listing,
+                    onUpdated: { updated in
+                        self.listing = updated
+                    },
+                    onDeleted: { _ in }
+                )
+                .environmentObject(authManager)
+                .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
             }
         }
@@ -1277,6 +1761,52 @@ struct ConversationChatSheet: View {
             if let otherUserId {
                 UserReviewsSheet(userId: otherUserId, userName: displayOtherName)
             }
+        }
+        .sheet(isPresented: $showOnboarding) {
+            if let url = onboardingUrl {
+                SafariView(url: url) {
+                    Task { await retryAcceptAfterOnboarding() }
+                }
+            }
+        }
+        .sheet(isPresented: $showPaymentSheet) {
+            if let paymentSheet {
+                PaymentSheetPresenter(paymentSheet: paymentSheet, onCompletion: handlePaymentSheetResult)
+            }
+        }
+        .sheet(isPresented: $showCompleteSheet) {
+            if let listing {
+                CompleteListingSheet(
+                    listing: listing,
+                    onReviewSaved: { updatedListing in
+                        if let updatedListing {
+                            self.listing = updatedListing
+                        }
+                    }
+                )
+                .environmentObject(authManager)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.hidden)
+            }
+        }
+        .sheet(isPresented: $showReviewOwnerSheet) {
+            ReviewOwnerSheet(
+                ownerName: ownerDisplayName,
+                rating: $reviewRating,
+                comment: $reviewComment,
+                isSubmitting: isSubmittingReview,
+                onSubmit: {
+                    Task { await submitOwnerReview() }
+                },
+                onCancel: {
+                    showReviewOwnerSheet = false
+                }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.hidden)
+        }
+        .onChange(of: listing?.id) { _, _ in
+            Task { await checkIfAlreadyReviewedOwner() }
         }
     }
 
@@ -1303,8 +1833,263 @@ struct ConversationChatSheet: View {
         return "Bruker \(otherUserId.suffix(4))"
     }
 
+    private var isOwner: Bool {
+        guard let userId = authManager.userIdentifier else { return false }
+        return listing?.userId == userId
+    }
+
+    private var isSafePayment: Bool {
+        listing?.offersSafePayment == true
+    }
+
+    private var hasExecutorAccepted: Bool {
+        if didAcceptSafePayment {
+            return true
+        }
+        if conversation.safePaymentAcceptedAt != nil {
+            return true
+        }
+        return messages.contains { isExecutorAcceptanceMessage($0.body) }
+    }
+
+    private var safePaymentStatus: String? {
+        safePaymentStatusOverride ?? conversation.safePaymentStatus
+    }
+
+    private var isPaymentStarted: Bool {
+        guard let status = safePaymentStatus else { return false }
+        return status == "held" || status == "released"
+    }
+
+    private var isPaymentHeld: Bool {
+        safePaymentStatus == "held"
+    }
+
+    private var shouldShowSafePaymentAction: Bool {
+        guard authManager.isAuthenticated, isSafePayment else { return false }
+        if isOwner {
+            return hasExecutorAccepted && !isPaymentStarted
+        }
+        return !hasExecutorAccepted
+    }
+
+    private var shouldShowSafePaymentAcceptedInfo: Bool {
+        guard authManager.isAuthenticated, isSafePayment else { return false }
+        if isOwner {
+            return isPaymentStarted
+        }
+        return hasExecutorAccepted
+    }
+
+    private var acceptActionTitle: String? {
+        guard let listing else { return nil }
+        if isOwner {
+            return "Godta \(displayOtherName)"
+        }
+        let priceValue = max(0, Int(listing.price))
+        return "Godta oppdraget for \(priceValue) kr"
+    }
+
+    private var acceptActionPrimaryMessage: String {
+        if isOwner {
+            return "Når du godtar, betaler du inn beløpet til Trygg betaling. Pengene holdes trygt til jobben er godkjent."
+        }
+        return "Når du godtar, betaler oppdragsgiver inn beløpet til Trygg betaling. Du får utbetaling når jobben er godkjent."
+    }
+
+    private var acceptActionSecondaryMessage: String {
+        "Trygg betaling er en valgfri tjeneste som gir ekstra sikkerhet for begge parter. Det er helt opp til dere om dere ønsker å bruke denne når dere inngår avtale."
+    }
+
+    private var acceptActionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(acceptActionPrimaryMessage)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(acceptActionSecondaryMessage)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                if isOwner {
+                    Task { await handleOwnerPaymentAction() }
+                } else {
+                    Task { await handleAcceptAction() }
+                }
+            } label: {
+                BoenklereActionButtonLabel(title: acceptActionTitle ?? "Godta", systemImage: "checkmark.seal.fill")
+            }
+            .buttonStyle(.plain)
+            .disabled(isAcceptingTask || isStartingPayment)
+        }
+    }
+
+    private var acceptedInfoSection: some View {
+        safePaymentInfoBox {
+            if isPaymentStarted {
+                if isOwner {
+                    ownerSafePaymentInfoText
+                } else {
+                    executorSafePaymentInfoText
+                }
+            } else {
+                Text("Du har godtatt oppdraget, venter på godkjenning av \(ownerDisplayName)")
+            }
+        }
+    }
+
+    private var shouldShowCompletePaymentButton: Bool {
+        guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
+        guard isPaymentHeld else { return false }
+        return listing?.isCompleted != true
+    }
+
+    private var completePaymentButton: some View {
+        Button {
+            Task { await completeListingAndReview() }
+        } label: {
+            BoenklereActionButtonLabel(
+                title: "Fullfør og utbetal \(safePaymentPriceText)",
+                systemImage: "checkmark.seal.fill"
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isCompletingListing)
+    }
+
+    private var shouldShowReviewOwnerButton: Bool {
+        guard authManager.isAuthenticated else { return false }
+        guard !isOwner else { return false }
+        guard listing?.isCompleted == true else { return false }
+        guard !hasReviewedOwner else { return false }
+        return true
+    }
+
+    private var reviewOwnerButton: some View {
+        Button {
+            showReviewOwnerSheet = true
+        } label: {
+            BoenklereActionButtonLabel(
+                title: "Gi vurdering av \(ownerDisplayName)",
+                systemImage: "star.fill"
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var messageRows: [MessageRow] {
         makeMessageRows(messages: messages, currentUserId: authManager.userIdentifier)
+    }
+
+    private var ownerDisplayName: String {
+        let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "oppdragseier" : name
+    }
+
+    private var executorDisplayName: String {
+        let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "oppdragstaker" : name
+    }
+
+    private var executorSafePaymentInfoText: some View {
+        Text(
+            "Dere har begge godtatt å utføre oppdraget med Trygg betaling. Du mottar utbetaling når \(ownerDisplayName) markerer oppdraget som utført"
+        )
+    }
+
+    private var ownerSafePaymentInfoText: some View {
+        let info = ownerSafePaymentInfoAttributedString(executorName: executorDisplayName)
+        return Text(info)
+            .environment(\.openURL, OpenURLAction { url in
+                if url.scheme == "boenklere", url.host == "my-listings" {
+                    openMyListings()
+                    return .handled
+                }
+                return .systemAction
+            })
+    }
+
+    private var safePaymentPriceText: String {
+        if let amountMinor = conversation.safePaymentAmount {
+            let amountValue = Double(amountMinor) / 100.0
+            let formatted = amountValue.truncatingRemainder(dividingBy: 1) == 0
+                ? String(Int(amountValue))
+                : String(format: "%.2f", amountValue)
+            return "\(formatted) kr"
+        }
+        if let listing {
+            let priceValue = max(0, Int(listing.price))
+            return "\(priceValue) kr"
+        }
+        return "0 kr"
+    }
+
+    private func ownerSafePaymentInfoAttributedString(executorName: String) -> AttributedString {
+        let linkToken = "[[MY_LISTINGS]]"
+        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken)."
+        var info = AttributedString(raw)
+        if let range = info.range(of: linkToken) {
+            var link = AttributedString("Mine annonser")
+            link.font = .caption.bold()
+            link.foregroundColor = .secondary
+            link.link = URL(string: "boenklere://my-listings")
+            info.replaceSubrange(range, with: link)
+        }
+        return info
+    }
+
+    private func safePaymentInfoBox(@ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            content()
+        }
+        .font(.caption)
+        .foregroundColor(.secondary)
+        .lineSpacing(2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func openMyListings() {
+        NotificationCenter.default.post(name: .openMyListings, object: nil)
+    }
+
+    @MainActor
+    private func completeListingAndReview() async {
+        guard let listing else { return }
+        guard let userId = authManager.userIdentifier else { return }
+        guard let listingId = listing.id else { return }
+
+        isCompletingListing = true
+        errorMessage = nil
+
+        do {
+            let updated = try await APIService.shared.updateListing(
+                listingId: listingId,
+                title: listing.title,
+                description: listing.description,
+                address: listing.address,
+                latitude: listing.latitude,
+                longitude: listing.longitude,
+                price: listing.price,
+                offersSafePayment: listing.offersSafePayment ?? false,
+                isCompleted: true,
+                userId: userId,
+                imageData: nil
+            )
+            self.listing = updated
+            showCompleteSheet = true
+        } catch {
+            errorMessage = "Kunne ikke fullføre oppdraget"
+        }
+
+        isCompletingListing = false
     }
 
     @MainActor
@@ -1425,6 +2210,174 @@ struct ConversationChatSheet: View {
         guard let url = APIService.shared.webSocketURL(conversationId: conversation.id, userId: userId) else { return }
         socketClient.connect(conversationId: conversation.id, userId: userId, url: url)
     }
+
+    @MainActor
+    private func handleAcceptAction() async {
+        guard !isAcceptingTask else { return }
+        guard authManager.isAuthenticated else { return }
+        if isOwner {
+            return
+        }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isAcceptingTask = true
+        print("Stripe: accept start conversationId=\(conversation.id) userId=\(userId)")
+        do {
+            let response = try await APIService.shared.acceptSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            if response.requiresOnboarding {
+                if let urlString = response.onboardingUrl,
+                   let url = URL(string: urlString) {
+                    print("Stripe: onboarding required conversationId=\(conversation.id)")
+                    onboardingUrl = url
+                    shouldRetryAcceptAfterOnboarding = true
+                    showOnboarding = true
+                } else {
+                    errorMessage = "Kunne ikke starte Stripe onboarding"
+                }
+            } else {
+                didAcceptSafePayment = true
+                safePaymentStatusOverride = response.conversation.safePaymentStatus
+                print("Stripe: accept completed conversationId=\(conversation.id)")
+            }
+        } catch {
+            errorMessage = "Kunne ikke oppdatere oppdraget"
+            print("Stripe: accept failed conversationId=\(conversation.id) error=\(error)")
+        }
+        isAcceptingTask = false
+    }
+
+    @MainActor
+    private func retryAcceptAfterOnboarding() async {
+        guard shouldRetryAcceptAfterOnboarding else { return }
+        shouldRetryAcceptAfterOnboarding = false
+        await handleAcceptAction()
+    }
+
+    @MainActor
+    private func handleOwnerPaymentAction() async {
+        guard authManager.isAuthenticated else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isStartingPayment = true
+        print("Stripe: payment start conversationId=\(conversation.id) userId=\(userId)")
+        do {
+            let response = try await APIService.shared.createSafePaymentIntent(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            StripeAPI.defaultPublishableKey = response.publishableKey
+            safePaymentStatusOverride = response.conversation.safePaymentStatus
+            print("Stripe: payment sheet ready conversationId=\(conversation.id)")
+            var configuration = PaymentSheet.Configuration()
+            configuration.merchantDisplayName = "Boenklere"
+            paymentSheet = PaymentSheet(
+                paymentIntentClientSecret: response.clientSecret,
+                configuration: configuration
+            )
+            showPaymentSheet = true
+        } catch {
+            errorMessage = "Kunne ikke starte betaling"
+            print("Stripe: payment start failed conversationId=\(conversation.id) error=\(error)")
+        }
+        isStartingPayment = false
+    }
+
+    private func handlePaymentSheetResult(_ result: PaymentSheetResult) {
+        switch result {
+        case .completed:
+            print("Stripe: payment sheet completed")
+            Task { await confirmSafePayment() }
+        case .failed:
+            errorMessage = "Betaling feilet"
+            print("Stripe: payment sheet failed")
+        case .canceled:
+            print("Stripe: payment sheet canceled")
+            break
+        }
+        showPaymentSheet = false
+        paymentSheet = nil
+    }
+
+    @MainActor
+    private func confirmSafePayment() async {
+        guard let userId = authManager.userIdentifier else { return }
+        do {
+            let updated = try await APIService.shared.confirmSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            safePaymentStatusOverride = updated.safePaymentStatus
+            print("Stripe: payment confirmed conversationId=\(conversation.id) status=\(updated.safePaymentStatus ?? "nil")")
+        } catch {
+            errorMessage = "Kunne ikke bekrefte betalingen"
+            print("Stripe: payment confirm failed conversationId=\(conversation.id) error=\(error)")
+        }
+    }
+
+    @MainActor
+    private func checkIfAlreadyReviewedOwner() async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard !isOwner else { return }
+        guard let listingId = listing?.id else { return }
+        guard let ownerId = listing?.userId else { return }
+
+        isCheckingReview = true
+        do {
+            let reviews = try await APIService.shared.getReviewsByReviewer(userId: userId)
+            hasReviewedOwner = reviews.contains { review in
+                review.listingId == listingId && review.revieweeId == ownerId
+            }
+        } catch {
+            hasReviewedOwner = false
+        }
+        isCheckingReview = false
+    }
+
+    @MainActor
+    private func submitOwnerReview() async {
+        print("submitOwnerReview: started")
+        guard let userId = authManager.userIdentifier else {
+            print("submitOwnerReview: no userId")
+            return
+        }
+        guard let listingId = listing?.id else {
+            print("submitOwnerReview: no listingId")
+            return
+        }
+        guard let ownerId = listing?.userId else {
+            print("submitOwnerReview: no ownerId")
+            return
+        }
+        guard reviewRating > 0 else {
+            print("submitOwnerReview: rating is 0")
+            errorMessage = "Du må velge en vurdering"
+            return
+        }
+
+        print("submitOwnerReview: calling API with listingId=\(listingId) reviewerId=\(userId) revieweeId=\(ownerId) rating=\(reviewRating)")
+        isSubmittingReview = true
+        do {
+            _ = try await APIService.shared.createReview(
+                listingId: listingId,
+                reviewerId: userId,
+                revieweeId: ownerId,
+                rating: reviewRating,
+                comment: reviewComment.isEmpty ? nil : reviewComment
+            )
+            print("submitOwnerReview: success")
+            hasReviewedOwner = true
+            showReviewOwnerSheet = false
+            reviewRating = 0
+            reviewComment = ""
+        } catch {
+            print("submitOwnerReview: error \(error)")
+            errorMessage = "Kunne ikke lagre vurderingen"
+        }
+        isSubmittingReview = false
+    }
 }
 
 private struct ChatInputBar: View {
@@ -1473,8 +2426,87 @@ private struct ChatInputBar: View {
     }
 }
 
+private struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+    let onDismiss: (() -> Void)?
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        private let onDismiss: (() -> Void)?
+
+        init(onDismiss: (() -> Void)?) {
+            self.onDismiss = onDismiss
+        }
+
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            onDismiss?()
+        }
+    }
+}
+
+struct PaymentSheetPresenter: UIViewControllerRepresentable {
+    let paymentSheet: PaymentSheet
+    let onCompletion: (PaymentSheetResult) -> Void
+
+    func makeUIViewController(context: Context) -> PresentationController {
+        PresentationController(paymentSheet: paymentSheet, onCompletion: onCompletion)
+    }
+
+    func updateUIViewController(_ uiViewController: PresentationController, context: Context) {
+        uiViewController.paymentSheet = paymentSheet
+        uiViewController.onCompletion = onCompletion
+        uiViewController.presentIfNeeded()
+    }
+
+    final class PresentationController: UIViewController {
+        var paymentSheet: PaymentSheet
+        var onCompletion: (PaymentSheetResult) -> Void
+        private var didPresent = false
+
+        init(paymentSheet: PaymentSheet, onCompletion: @escaping (PaymentSheetResult) -> Void) {
+            self.paymentSheet = paymentSheet
+            self.onCompletion = onCompletion
+            super.init(nibName: nil, bundle: nil)
+            view.backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            presentIfNeeded()
+        }
+
+        func presentIfNeeded() {
+            guard !didPresent else { return }
+            guard view.window != nil else { return }
+            didPresent = true
+            paymentSheet.present(from: self) { [weak self] result in
+                self?.didPresent = false
+                self?.onCompletion(result)
+            }
+        }
+    }
+}
+
 private struct MessageBubble: View {
     let message: APIMessage
+    let bodyText: String
+    let isSystem: Bool
     let isOutgoing: Bool
     let avatarName: String?
     let showsAvatar: Bool
@@ -1485,6 +2517,20 @@ private struct MessageBubble: View {
     let onAvatarTap: (() -> Void)?
 
     var body: some View {
+        if isSystem {
+            HStack {
+                Spacer(minLength: 40)
+                Text(bodyText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color(.systemGray5), in: Capsule())
+                Spacer(minLength: 40)
+            }
+            .padding(.top, topSpacing)
+        } else {
         VStack(alignment: isOutgoing ? .trailing : .leading, spacing: 2) {
             HStack(alignment: .bottom, spacing: 8) {
                 if isOutgoing {
@@ -1527,6 +2573,7 @@ private struct MessageBubble: View {
             }
         }
         .padding(.top, topSpacing)
+        }
     }
 
     private var bubbleColor: Color {
@@ -1551,7 +2598,7 @@ private struct MessageBubble: View {
     }
 
     private var bubbleView: some View {
-        Text(message.body)
+        Text(bodyText)
             .font(.body)
             .foregroundColor(isOutgoing ? .white : .primary)
             .padding(.horizontal, 12)
@@ -1702,6 +2749,8 @@ private struct NewMessagePill: View {
 
 private struct MessageRow: Identifiable {
     let message: APIMessage
+    let bodyText: String
+    let isSystem: Bool
     let isOutgoing: Bool
     let showAvatar: Bool
     let showTimestamp: Bool
@@ -1723,16 +2772,21 @@ private func makeMessageRows(messages: [APIMessage], currentUserId: String?) -> 
         let prev = index > messages.startIndex ? messages[index - 1] : nil
         let next = index < messages.index(before: messages.endIndex) ? messages[index + 1] : nil
 
-        let isOutgoing = currentUserId != nil && message.senderId == currentUserId
-        let groupedWithPrev = prev?.senderId == message.senderId
-        let groupedWithNext = next?.senderId == message.senderId
-        let showAvatar = !isOutgoing && !groupedWithNext
-        let showTimestamp = !groupedWithNext
-        let topSpacing: CGFloat = groupedWithPrev ? 2 : 10
+        let systemState = parseSystemMessage(message.body)
+        let prevIsSystem = prev.map { parseSystemMessage($0.body).isSystem } ?? false
+        let nextIsSystem = next.map { parseSystemMessage($0.body).isSystem } ?? false
+        let isOutgoing = !systemState.isSystem && currentUserId != nil && message.senderId == currentUserId
+        let groupedWithPrev = !systemState.isSystem && !prevIsSystem && prev?.senderId == message.senderId
+        let groupedWithNext = !systemState.isSystem && !nextIsSystem && next?.senderId == message.senderId
+        let showAvatar = !systemState.isSystem && !isOutgoing && !groupedWithNext
+        let showTimestamp = !systemState.isSystem && !groupedWithNext
+        let topSpacing: CGFloat = systemState.isSystem ? 12 : (groupedWithPrev ? 2 : 10)
 
         rows.append(
             MessageRow(
                 message: message,
+                bodyText: systemState.text,
+                isSystem: systemState.isSystem,
                 isOutgoing: isOutgoing,
                 showAvatar: showAvatar,
                 showTimestamp: showTimestamp,
@@ -1748,6 +2802,30 @@ private func makeMessageRows(messages: [APIMessage], currentUserId: String?) -> 
 
 private struct APIMessageEvent: Codable {
     let message: APIMessage
+}
+
+private let systemMessagePrefix = "SYSTEM:"
+private let executorAcceptanceMarker = "har godtatt oppdraget for"
+
+private func parseSystemMessage(_ body: String) -> (isSystem: Bool, text: String) {
+    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.hasPrefix(systemMessagePrefix) {
+        let stripped = trimmed.dropFirst(systemMessagePrefix.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (true, stripped)
+    }
+    return (false, trimmed)
+}
+
+private func stripSystemMessage(_ body: String?) -> String? {
+    guard let body else { return nil }
+    return parseSystemMessage(body).text
+}
+
+private func isExecutorAcceptanceMessage(_ body: String) -> Bool {
+    let parsed = parseSystemMessage(body)
+    guard parsed.isSystem else { return false }
+    return parsed.text.localizedCaseInsensitiveContains(executorAcceptanceMarker)
 }
 
 private final class ChatSocketClient: ObservableObject {
@@ -1830,6 +2908,83 @@ private final class ChatSocketClient: ObservableObject {
         let decoder = JSONDecoder()
         if let event = try? decoder.decode(APIMessageEvent.self, from: data) {
             onMessage?(event.message)
+        }
+    }
+}
+
+private struct ReviewOwnerSheet: View {
+    let ownerName: String
+    @Binding var rating: Int
+    @Binding var comment: String
+    let isSubmitting: Bool
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Text("Vurder \(ownerName)")
+                        .font(.headline)
+
+                    Text("Hvordan var din opplevelse med oppdraget?")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                HStack(spacing: 12) {
+                    ForEach(1...5, id: \.self) { star in
+                        Button {
+                            rating = star
+                        } label: {
+                            Image(systemName: star <= rating ? "star.fill" : "star")
+                                .font(.system(size: 32))
+                                .foregroundColor(star <= rating ? .yellow : .gray.opacity(0.4))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 8)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Kommentar (valgfritt)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    TextField("Skriv en kommentar...", text: $comment, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(3...6)
+                }
+
+                Spacer()
+
+                Button {
+                    onSubmit()
+                } label: {
+                    if isSubmitting {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    } else {
+                        Text("Send vurdering")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(rating == 0 || isSubmitting)
+            }
+            .padding(24)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Avbryt") {
+                        onCancel()
+                    }
+                }
+            }
         }
     }
 }
