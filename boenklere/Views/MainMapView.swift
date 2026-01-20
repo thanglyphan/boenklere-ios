@@ -674,80 +674,98 @@ struct ListingClusterMarker: View {
 struct ListingRow: View {
     let listing: APIListing
     let userLocation: CLLocation?
+    let trailingView: AnyView?
     let onTap: () -> Void
     @State private var image: UIImage?
+
+    init(
+        listing: APIListing,
+        userLocation: CLLocation?,
+        trailingView: AnyView? = nil,
+        onTap: @escaping () -> Void
+    ) {
+        self.listing = listing
+        self.userLocation = userLocation
+        self.trailingView = trailingView
+        self.onTap = onTap
+    }
 
     private var isSafePayment: Bool {
         listing.offersSafePayment == true
     }
 
     var body: some View {
-        Button(action: onTap) {
         HStack(spacing: 12) {
-            // Round image on the left
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 56, height: 56)
-                    .clipShape(Circle())
-            } else {
-                Circle()
-                    .fill(Color(.systemGray5))
-                    .frame(width: 56, height: 56)
-                    .overlay {
-                        Image(systemName: "photo")
+            Button(action: onTap) {
+                HStack(spacing: 12) {
+                    // Round image on the left
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 56, height: 56)
+                            .clipShape(Circle())
+                    } else {
+                        Circle()
+                            .fill(Color(.systemGray5))
+                            .frame(width: 56, height: 56)
+                            .overlay {
+                                Image(systemName: "photo")
+                                    .foregroundColor(.secondary)
+                            }
+                    }
+
+                    // Description and status
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(listing.description)
+                            .font(.subheadline)
                             .foregroundColor(.secondary)
+                            .lineLimit(2)
+
+                        HStack(spacing: 6) {
+                            if isSafePayment {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            }
+                            Text(isSafePayment ? "Trygg betaling" : "Betaling på eget ansvar")
+                                .font(.caption)
+                                .foregroundColor(isSafePayment ? .green : .secondary)
+                        }
                     }
-            }
 
-            // Description and status
-            VStack(alignment: .leading, spacing: 4) {
-                Text(listing.description)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
+                    Spacer()
 
-                HStack(spacing: 6) {
-                    if isSafePayment {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundColor(.green)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if let distanceText {
+                            Text(distanceText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        if listing.price > 0 {
+                            Text("\(Int(listing.price)) kr")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.blue)
+                        } else {
+                            Text("Ikke oppgitt")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                        }
                     }
-                    Text(isSafePayment ? "Trygg betaling" : "Betaling på eget ansvar")
-                        .font(.caption)
-                        .foregroundColor(isSafePayment ? .green : .secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
 
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                if let distanceText {
-                    Text(distanceText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                // Price on the right
-                if listing.price > 0 {
-                    Text("\(Int(listing.price)) kr")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.blue)
-                } else {
-                    Text("Ikke oppgitt")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
-                }
+            if let trailingView {
+                trailingView
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
         .task {
             await loadImage()
         }
@@ -2298,6 +2316,7 @@ struct MyListingsSheet: View {
     @State private var paymentSheet: PaymentSheet?
     @State private var showPaymentSheet = false
     @State private var paymentConversation: APIConversationSummary?
+    @State private var cancelingListingIds: Set<Int64> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2343,7 +2362,11 @@ struct MyListingsSheet: View {
                         LazyVStack(spacing: 0) {
                             ForEach(visibleListings, id: \.id) { listing in
                                 VStack(spacing: 8) {
-                                    ListingRow(listing: listing, userLocation: nil) {
+                                    ListingRow(
+                                        listing: listing,
+                                        userLocation: nil,
+                                        trailingView: AnyView(listingActionsMenu(for: listing))
+                                    ) {
                                         selectedListing = listing
                                     }
 
@@ -2617,6 +2640,53 @@ struct MyListingsSheet: View {
         return completingListingIds.contains(listingId)
     }
 
+    private func isCanceling(_ listing: APIListing) -> Bool {
+        guard let listingId = listing.id else { return false }
+        return cancelingListingIds.contains(listingId)
+    }
+
+    private func isSafePaymentActionEnabled(for listing: APIListing) -> Bool {
+        guard listing.offersSafePayment == true else { return false }
+        guard let listingId = listing.id else { return false }
+        return safePaymentByListingId[listingId] != nil
+    }
+
+    private func listingActionsMenu(for listing: APIListing) -> some View {
+        Menu {
+            if isSafePaymentActionEnabled(for: listing) {
+                Button("Fullfør og utbetal \(formattedSafePaymentPrice(for: listing))") {
+                    Task { await completeListingAndReview(listing) }
+                }
+                .disabled(isCompleting(listing))
+
+                Button("Kanseller og refunder", role: .destructive) {
+                    Task { await cancelSafePayment(for: listing) }
+                }
+                .disabled(isCanceling(listing))
+            } else {
+                Button("Merk som utført") {
+                    Task { await completeListingAndReview(listing) }
+                }
+                .disabled(isCompleting(listing) || listing.isCompleted == true)
+
+                Button("Slett annonse", role: .destructive) {
+                    if let listingId = listing.id {
+                        pendingDeleteId = listingId
+                        showDeleteConfirm = true
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 44, height: 44)
+                .background(Color.gray, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Flere valg")
+    }
+
     @MainActor
     private func completeListingAndReview(_ listing: APIListing) async {
         guard let userId = authManager.userIdentifier else { return }
@@ -2649,6 +2719,30 @@ struct MyListingsSheet: View {
         }
 
         completingListingIds.remove(listingId)
+    }
+
+    @MainActor
+    private func cancelSafePayment(for listing: APIListing) async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard let listingId = listing.id else { return }
+        guard let conversation = safePaymentByListingId[listingId] else { return }
+        guard !cancelingListingIds.contains(listingId) else { return }
+
+        cancelingListingIds.insert(listingId)
+        errorMessage = nil
+
+        do {
+            _ = try await APIService.shared.cancelSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            safePaymentByListingId[listingId] = nil
+            await loadListings()
+        } catch {
+            errorMessage = "Kunne ikke kansellere oppdraget"
+        }
+
+        cancelingListingIds.remove(listingId)
     }
 
     private func buildSafePaymentMap(
@@ -3694,9 +3788,6 @@ struct EditListingSheet: View {
     @State private var selectedImage: Image?
     @State private var selectedImageData: Data?
     @State private var existingImage: UIImage?
-    @State private var showDeleteConfirm = false
-    @State private var showCompleteSheet = false
-    @State private var isCompleted = false
     @State private var justSaved = false
 
     var body: some View {
@@ -3735,10 +3826,6 @@ struct EditListingSheet: View {
                 }
                 .disabled(!canSave)
 
-                if !isEditingTitle && !isEditingDescription && !isEditingPrice && !isEditingAddress {
-                    actionSection
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
             }
             .animation(.easeInOut(duration: 0.2), value: isEditingTitle)
             .animation(.easeInOut(duration: 0.2), value: isEditingDescription)
@@ -3746,28 +3833,6 @@ struct EditListingSheet: View {
             .animation(.easeInOut(duration: 0.2), value: isEditingAddress)
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
-        }
-        .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("Slett annonse", role: .destructive) {
-                Task { await deleteListing() }
-            }
-            Button("Avbryt", role: .cancel) {}
-        } message: {
-            Text("Dette kan ikke angres.")
-        }
-        .sheet(isPresented: $showCompleteSheet) {
-            CompleteListingSheet(
-                listing: listing,
-                onReviewSaved: { updatedListing in
-                    if let updatedListing {
-                        onUpdated(updatedListing)
-                    }
-                    isCompleted = true
-                }
-            )
-            .environmentObject(authManager)
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
         }
         .onAppear {
             titleDraft = listing.title
@@ -3783,7 +3848,6 @@ struct EditListingSheet: View {
             selectedAddress = listing.address
             draftLatitude = listing.latitude
             draftLongitude = listing.longitude
-            isCompleted = listing.isCompleted ?? false
             offersSafePayment = listing.offersSafePayment ?? false
             loadExistingImage()
         }
@@ -4016,33 +4080,6 @@ struct EditListingSheet: View {
         }
     }
 
-    private var actionSection: some View {
-        VStack(spacing: 12) {
-            Button {
-                showCompleteSheet = true
-            } label: {
-                BoenklereActionButtonLabel(
-                    title: "Merk som utført",
-                    systemImage: "checkmark.seal.fill",
-                    textColor: isCompleted ? .secondary : Color(red: 0.07, green: 0.34, blue: 0.68),
-                    fillColor: Color(red: 0.88, green: 0.95, blue: 1.0).opacity(isCompleted ? 0.6 : 1.0)
-                )
-            }
-            .disabled(isCompleted)
-
-            Button(role: .destructive) {
-                showDeleteConfirm = true
-            } label: {
-                BoenklereActionButtonLabel(
-                    title: "Slett annonse",
-                    systemImage: "trash",
-                    textColor: .red,
-                    fillColor: Color.red.opacity(0.12)
-                )
-            }
-        }
-    }
-
     private func fieldHeader(title: String, isEditing: Bool, action: @escaping () -> Void) -> some View {
         HStack {
             Text(title)
@@ -4118,24 +4155,6 @@ struct EditListingSheet: View {
             isEditingAddress = false
         } catch {
             errorMessage = "Kunne ikke lagre endringer"
-        }
-
-        isSaving = false
-    }
-
-    @MainActor
-    private func deleteListing() async {
-        guard let listingId = listing.id else { return }
-
-        isSaving = true
-        errorMessage = nil
-
-        do {
-            try await APIService.shared.deleteListing(id: listingId)
-            onDeleted(listingId)
-            dismiss()
-        } catch {
-            errorMessage = "Kunne ikke slette annonse"
         }
 
         isSaving = false
@@ -4653,7 +4672,7 @@ struct ListingDetailSheet: View {
 
                     // Price
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .top) {
+                        HStack(alignment: .center) {
                             Text("Oppgitt oppdragspris")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)

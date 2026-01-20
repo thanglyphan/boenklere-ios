@@ -133,6 +133,10 @@ private struct SafePaymentConfirmRequest: Codable {
     let userId: String
 }
 
+private struct SafePaymentCancelRequest: Codable {
+    let userId: String
+}
+
 struct SafePaymentAcceptResponse: Codable {
     let conversation: APIConversation
     let requiresOnboarding: Bool
@@ -676,6 +680,31 @@ class APIService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
             SafePaymentConfirmRequest(userId: userId)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<APIConversation>.self, from: data)
+        guard let conversation = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return conversation
+    }
+
+    func cancelSafePayment(conversationId: Int64, userId: String) async throws -> APIConversation {
+        let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/cancel")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SafePaymentCancelRequest(userId: userId)
         )
 
         let (data, response) = try await URLSession.shared.data(for: request)

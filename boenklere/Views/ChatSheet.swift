@@ -32,6 +32,9 @@ struct ChatSheet: View {
     @State private var isStartingPayment = false
     @State private var showCompleteSheet = false
     @State private var isCompletingListing = false
+    @State private var isCancelingPayment = false
+    @State private var showDeleteConfirm = false
+    @State private var isDeletingListing = false
     @State private var showStripeOnboardingExplanation = false
 
     var body: some View {
@@ -43,7 +46,8 @@ struct ChatSheet: View {
             VStack(spacing: 0) {
                 ChatHeader(
                     title: currentListing.title,
-                    isModalStyle: isModalStyle
+                    isModalStyle: isModalStyle,
+                    trailingView: headerTrailingView
                 ) {
                     dismiss()
                 }
@@ -214,6 +218,14 @@ struct ChatSheet: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
         }
+        .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Slett annonse", role: .destructive) {
+                Task { await deleteListing() }
+            }
+            Button("Avbryt", role: .cancel) {}
+        } message: {
+            Text("Dette kan ikke angres.")
+        }
     }
 
     private var currentListing: APIListing {
@@ -223,6 +235,11 @@ struct ChatSheet: View {
     private var isOwner: Bool {
         guard let userId = authManager.userIdentifier else { return false }
         return currentListing.userId == userId
+    }
+
+    private var headerTrailingView: AnyView? {
+        guard isOwner else { return nil }
+        return AnyView(listingActionsButton)
     }
 
     private var displayUserName: String {
@@ -235,13 +252,30 @@ struct ChatSheet: View {
     }
 
     private var hasExecutorAccepted: Bool {
+        let latestAcceptanceId = latestMessageId(in: messages, matching: isExecutorAcceptanceMessage)
+        let latestCancellationId = latestMessageId(in: messages, matching: isSafePaymentCancellationMessage)
+        if let cancelId = latestCancellationId {
+            if let acceptId = latestAcceptanceId {
+                if cancelId > acceptId {
+                    return false
+                }
+            } else if conversation?.safePaymentAcceptedAt == nil {
+                return false
+            }
+        }
         if didAcceptSafePayment {
             return true
         }
         if conversation?.safePaymentAcceptedAt != nil {
             return true
         }
-        return messages.contains { isExecutorAcceptanceMessage($0.body) }
+        if let acceptId = latestAcceptanceId {
+            if let cancelId = latestCancellationId {
+                return acceptId > cancelId
+            }
+            return true
+        }
+        return false
     }
 
     private var safePaymentStatus: String? {
@@ -299,6 +333,13 @@ struct ChatSheet: View {
         "Trygg betaling er en valgfri tjeneste som gir ekstra sikkerhet for begge parter. Det er helt opp til dere om dere ønsker å bruke denne når dere inngår avtale."
     }
 
+    private var acceptActionFeeMessage: String {
+        if isOwner {
+            return "For Trygg betaling og utbetaling tar boenklere et plattformgebyr på 10 % av prisen du har satt for jobben."
+        }
+        return "Dette koster ikke noe for deg. Det er oppdragsgiver som dekker gebyret for Trygg betaling."
+    }
+
     private var acceptActionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(acceptActionPrimaryMessage)
@@ -309,6 +350,12 @@ struct ChatSheet: View {
 
             Text(acceptActionSecondaryMessage)
                 .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(acceptActionFeeMessage)
+                .font(.caption)
                 .foregroundColor(.secondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -345,6 +392,43 @@ struct ChatSheet: View {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
         guard isPaymentHeld else { return false }
         return currentListing.isCompleted != true
+    }
+
+    private var isSafePaymentActionEnabled: Bool {
+        isSafePayment && isPaymentHeld
+    }
+
+    private var listingActionsButton: some View {
+        Menu {
+            if isSafePaymentActionEnabled {
+                Button("Fullfør og utbetal \(safePaymentPriceText)") {
+                    Task { await completeListingAndReview() }
+                }
+                .disabled(isCompletingListing)
+
+                Button("Kanseller og refunder", role: .destructive) {
+                    Task { await cancelSafePayment() }
+                }
+                .disabled(isCancelingPayment)
+            } else {
+                Button("Merk som utført") {
+                    Task { await completeListingAndReview() }
+                }
+                .disabled(isCompletingListing || currentListing.isCompleted == true)
+
+                Button("Slett annonse", role: .destructive) {
+                    showDeleteConfirm = true
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 44, height: 44)
+                .background(Color.gray, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Flere valg")
     }
 
     private var completePaymentButton: some View {
@@ -662,7 +746,7 @@ struct ChatSheet: View {
 
     private func ownerSafePaymentInfoAttributedString(executorName: String) -> AttributedString {
         let linkToken = "[[MY_LISTINGS]]"
-        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken)."
+        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken). Ønsker du å kansellere, vil vi refundere pengene til din konto. Det kan du enten gjøre i Mine annonser eller trykke på knappen oppe til høyre."
         var info = AttributedString(raw)
         if let range = info.range(of: linkToken) {
             var link = AttributedString("Mine annonser")
@@ -720,6 +804,47 @@ struct ChatSheet: View {
         }
 
         isCompletingListing = false
+    }
+
+    @MainActor
+    private func cancelSafePayment() async {
+        guard let conversation else { return }
+        guard let userId = authManager.userIdentifier else { return }
+        guard !isCancelingPayment else { return }
+
+        isCancelingPayment = true
+        errorMessage = nil
+
+        do {
+            let updated = try await APIService.shared.cancelSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            self.conversation = updated
+            didAcceptSafePayment = false
+        } catch {
+            errorMessage = "Kunne ikke kansellere oppdraget"
+        }
+
+        isCancelingPayment = false
+    }
+
+    @MainActor
+    private func deleteListing() async {
+        guard let listingId = currentListing.id else { return }
+        guard !isDeletingListing else { return }
+
+        isDeletingListing = true
+        errorMessage = nil
+
+        do {
+            try await APIService.shared.deleteListing(id: listingId)
+            dismiss()
+        } catch {
+            errorMessage = "Kunne ikke slette annonsen"
+        }
+
+        isDeletingListing = false
     }
 
 }
@@ -1666,6 +1791,9 @@ struct ConversationChatSheet: View {
     @State private var reviewRating: Int = 0
     @State private var reviewComment: String = ""
     @State private var isSubmittingReview = false
+    @State private var isCancelingPayment = false
+    @State private var showDeleteConfirm = false
+    @State private var isDeletingListing = false
 
     var body: some View {
         ZStack {
@@ -1882,6 +2010,14 @@ struct ConversationChatSheet: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
         }
+        .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Slett annonse", role: .destructive) {
+                Task { await deleteListing() }
+            }
+            Button("Avbryt", role: .cancel) {}
+        } message: {
+            Text("Dette kan ikke angres.")
+        }
         .onChange(of: listing?.id) { _, _ in
             Task { await checkIfAlreadyReviewedOwner() }
         }
@@ -1928,6 +2064,10 @@ struct ConversationChatSheet: View {
                 }
 
                 Spacer()
+
+                if shouldShowListingActionsButton {
+                    listingActionsButton
+                }
 
                 if isModalStyle {
                     Button(action: { dismiss() }) {
@@ -2014,14 +2154,72 @@ struct ConversationChatSheet: View {
         listing?.offersSafePayment == true
     }
 
+    private var shouldShowListingActionsButton: Bool {
+        isOwner
+    }
+
+    private var isSafePaymentActionEnabled: Bool {
+        isSafePayment && isPaymentHeld
+    }
+
+    private var listingActionsButton: some View {
+        Menu {
+            if isSafePaymentActionEnabled {
+                Button("Fullfør og utbetal \(safePaymentPriceText)") {
+                    Task { await completeListingAndReview() }
+                }
+                .disabled(isCompletingListing)
+
+                Button("Kanseller og refunder", role: .destructive) {
+                    Task { await cancelSafePayment() }
+                }
+                .disabled(isCancelingPayment)
+            } else {
+                Button("Merk som utført") {
+                    Task { await completeListingAndReview() }
+                }
+                .disabled(isCompletingListing || listing?.isCompleted == true)
+
+                Button("Slett annonse", role: .destructive) {
+                    showDeleteConfirm = true
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 44, height: 44)
+                .background(Color.gray, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Flere valg")
+    }
+
     private var hasExecutorAccepted: Bool {
+        let latestAcceptanceId = latestMessageId(in: messages, matching: isExecutorAcceptanceMessage)
+        let latestCancellationId = latestMessageId(in: messages, matching: isSafePaymentCancellationMessage)
+        if let cancelId = latestCancellationId {
+            if let acceptId = latestAcceptanceId {
+                if cancelId > acceptId {
+                    return false
+                }
+            } else if conversation.safePaymentAcceptedAt == nil {
+                return false
+            }
+        }
         if didAcceptSafePayment {
             return true
         }
         if conversation.safePaymentAcceptedAt != nil {
             return true
         }
-        return messages.contains { isExecutorAcceptanceMessage($0.body) }
+        if let acceptId = latestAcceptanceId {
+            if let cancelId = latestCancellationId {
+                return acceptId > cancelId
+            }
+            return true
+        }
+        return false
     }
 
     private var safePaymentStatus: String? {
@@ -2056,7 +2254,7 @@ struct ConversationChatSheet: View {
     private var acceptActionTitle: String? {
         guard let listing else { return nil }
         if isOwner {
-            return "Godta \(displayOtherName)"
+            return "Godta \(displayOtherName) og betal"
         }
         let priceValue = max(0, Int(listing.price))
         return "Godta oppdraget for \(priceValue) kr"
@@ -2073,6 +2271,13 @@ struct ConversationChatSheet: View {
         "Trygg betaling er en valgfri tjeneste som gir ekstra sikkerhet for begge parter. Det er helt opp til dere om dere ønsker å bruke denne når dere inngår avtale."
     }
 
+    private var acceptActionFeeMessage: String {
+        if isOwner {
+            return "For Trygg betaling og utbetaling tar boenklere et plattformgebyr på 10 % av prisen du har satt for jobben."
+        }
+        return "Dette koster ikke noe for deg. Det er oppdragsgiver som dekker gebyret for Trygg betaling."
+    }
+
     private var acceptActionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(acceptActionPrimaryMessage)
@@ -2083,6 +2288,12 @@ struct ConversationChatSheet: View {
 
             Text(acceptActionSecondaryMessage)
                 .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(acceptActionFeeMessage)
+                .font(.caption)
                 .foregroundColor(.secondary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2203,7 +2414,7 @@ struct ConversationChatSheet: View {
 
     private func ownerSafePaymentInfoAttributedString(executorName: String) -> AttributedString {
         let linkToken = "[[MY_LISTINGS]]"
-        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken)."
+        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken). Ønsker du å kansellere, vil vi refundere pengene til din konto. Det kan du enten gjøre i Mine annonser eller trykke på knappen oppe til høyre."
         var info = AttributedString(raw)
         if let range = info.range(of: linkToken) {
             var link = AttributedString("Mine annonser")
@@ -2262,6 +2473,46 @@ struct ConversationChatSheet: View {
         }
 
         isCompletingListing = false
+    }
+
+    @MainActor
+    private func cancelSafePayment() async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard !isCancelingPayment else { return }
+
+        isCancelingPayment = true
+        errorMessage = nil
+
+        do {
+            let updated = try await APIService.shared.cancelSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            safePaymentStatusOverride = updated.safePaymentStatus
+            didAcceptSafePayment = false
+        } catch {
+            errorMessage = "Kunne ikke kansellere oppdraget"
+        }
+
+        isCancelingPayment = false
+    }
+
+    @MainActor
+    private func deleteListing() async {
+        guard let listingId = listing?.id else { return }
+        guard !isDeletingListing else { return }
+
+        isDeletingListing = true
+        errorMessage = nil
+
+        do {
+            try await APIService.shared.deleteListing(id: listingId)
+            dismiss()
+        } catch {
+            errorMessage = "Kunne ikke slette annonsen"
+        }
+
+        isDeletingListing = false
     }
 
     @MainActor
@@ -2633,13 +2884,6 @@ private struct ChatInputBar: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
             HStack(spacing: 10) {
                 TextField("Skriv en melding", text: $text, axis: .vertical)
                     .lineLimit(1...4)
@@ -3042,6 +3286,7 @@ private struct APIMessageEvent: Codable {
 
 private let systemMessagePrefix = "SYSTEM:"
 private let executorAcceptanceMarker = "har godtatt oppdraget for"
+private let safePaymentCancellationMarker = "har kansellert oppdraget"
 
 private func parseSystemMessage(_ body: String) -> (isSystem: Bool, text: String) {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3062,6 +3307,19 @@ private func isExecutorAcceptanceMessage(_ body: String) -> Bool {
     let parsed = parseSystemMessage(body)
     guard parsed.isSystem else { return false }
     return parsed.text.localizedCaseInsensitiveContains(executorAcceptanceMarker)
+}
+
+private func isSafePaymentCancellationMessage(_ body: String) -> Bool {
+    let parsed = parseSystemMessage(body)
+    guard parsed.isSystem else { return false }
+    return parsed.text.localizedCaseInsensitiveContains(safePaymentCancellationMarker)
+}
+
+private func latestMessageId(
+    in messages: [APIMessage],
+    matching predicate: (String) -> Bool
+) -> Int64? {
+    messages.filter { predicate($0.body) }.map(\.id).max()
 }
 
 private final class ChatSocketClient: ObservableObject {
