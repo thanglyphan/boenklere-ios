@@ -1,5 +1,14 @@
 import Foundation
 
+// Listing status constants
+enum ListingStatus: String, Codable {
+    case initiated = "INITIATED"
+    case acceptedOwner = "ACCEPTED_OWNER"
+    case acceptedContractor = "ACCEPTED_CONTRACTOR"
+    case acceptedBoth = "ACCEPTED_BOTH"
+    case completed = "COMPLETED"
+}
+
 struct APIListing: Codable, Identifiable, Hashable {
     let id: Int64?
     let title: String
@@ -13,6 +22,8 @@ struct APIListing: Codable, Identifiable, Hashable {
     let userId: String
     let userName: String?
     let isCompleted: Bool?
+    let status: String?
+    let acceptedContractorId: String?
     let createdAt: String?
 
     func hash(into hasher: inout Hasher) {
@@ -388,6 +399,58 @@ class APIService {
         return listing
     }
 
+    /// Accept listing - owner accepts contractor or contractor accepts to perform job
+    func acceptListing(listingId: Int64, userId: String) async throws -> APIListing {
+        let url = URL(string: "\(baseURL)/api/listings/\(listingId)/accept")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = ["userId": userId]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<APIListing>.self, from: data)
+        guard let listing = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return listing
+    }
+
+    /// Decline listing - resets status to INITIATED
+    func declineListing(listingId: Int64, userId: String) async throws -> APIListing {
+        let url = URL(string: "\(baseURL)/api/listings/\(listingId)/decline")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = ["userId": userId]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<APIListing>.self, from: data)
+        guard let listing = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return listing
+    }
+
     @discardableResult
     func upsertUser(
         userId: String,
@@ -539,6 +602,16 @@ class APIService {
             throw APIError.invalidResponse
         }
 
+        return conversation
+    }
+
+    func getConversation(id: Int64) async throws -> APIConversation {
+        let url = URL(string: "\(baseURL)/api/conversations/\(id)")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let apiResponse = try JSONDecoder().decode(APIResponse<APIConversation>.self, from: data)
+        guard let conversation = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
         return conversation
     }
 
@@ -699,6 +772,31 @@ class APIService {
 
     func cancelSafePayment(conversationId: Int64, userId: String) async throws -> APIConversation {
         let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/cancel")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            SafePaymentCancelRequest(userId: userId)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<APIConversation>.self, from: data)
+        guard let conversation = apiResponse.data else {
+            throw APIError.invalidResponse
+        }
+
+        return conversation
+    }
+
+    func declineSafePayment(conversationId: Int64, userId: String) async throws -> APIConversation {
+        let url = URL(string: "\(baseURL)/api/conversations/\(conversationId)/safe-payment/decline")!
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

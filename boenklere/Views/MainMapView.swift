@@ -2317,6 +2317,7 @@ struct MyListingsSheet: View {
     @State private var showPaymentSheet = false
     @State private var paymentConversation: APIConversationSummary?
     @State private var cancelingListingIds: Set<Int64> = []
+    @State private var decliningListingIds: Set<Int64> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2372,41 +2373,97 @@ struct MyListingsSheet: View {
 
                                     if shouldShowAcceptButton(for: listing) {
                                         let name = buyerName(for: listing)
+                                        let listingId = listing.id ?? -1
+                                        let isDeclining = decliningListingIds.contains(listingId)
+                                        let isAccepting = acceptingConversationId != nil
+                                        let isActionDisabled = isDeclining || isAccepting
 
                                         VStack(spacing: 8) {
                                             Text("\(name) har godtatt å utføre oppdraget")
                                                 .font(.subheadline)
                                                 .foregroundColor(.secondary)
 
-                                            Button {
-                                                if let listingId = listing.id,
-                                                   let conversation = pendingAcceptanceByListingId[listingId] {
-                                                    Task { await startPayment(for: conversation) }
+                                            HStack(spacing: 8) {
+                                                Button {
+                                                    if let listingId = listing.id,
+                                                       let conversation = pendingAcceptanceByListingId[listingId] {
+                                                        Task { await startPayment(for: conversation) }
+                                                    }
+                                                } label: {
+                                                    HStack(spacing: 6) {
+                                                        if isAccepting {
+                                                            ProgressView()
+                                                                .scaleEffect(0.8)
+                                                                .tint(Color(red: 0.07, green: 0.34, blue: 0.68))
+                                                        } else {
+                                                            Image(systemName: "checkmark.circle.fill")
+                                                        }
+                                                        Text("Godta")
+                                                    }
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundColor(Color(red: 0.07, green: 0.34, blue: 0.68))
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 12)
+                                                    .background(Color(red: 0.82, green: 0.92, blue: 1.0))
+                                                    .cornerRadius(24)
                                                 }
-                                            } label: {
-                                                BoenklereActionButtonLabel(
-                                                    title: "Godta \(name)",
-                                                    systemImage: "checkmark.circle.fill"
-                                                )
+                                                .buttonStyle(.plain)
+                                                .disabled(isActionDisabled)
+
+                                                Button {
+                                                    Task { await declineSafePayment(for: listing) }
+                                                } label: {
+                                                    HStack(spacing: 6) {
+                                                        if isDeclining {
+                                                            ProgressView()
+                                                                .scaleEffect(0.8)
+                                                                .tint(Color(red: 0.68, green: 0.07, blue: 0.07))
+                                                        } else {
+                                                            Image(systemName: "xmark.circle.fill")
+                                                        }
+                                                        Text("Avslå")
+                                                    }
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundColor(Color(red: 0.68, green: 0.07, blue: 0.07))
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 12)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 24)
+                                                            .stroke(Color(red: 0.68, green: 0.07, blue: 0.07), lineWidth: 1)
+                                                    )
+                                                }
+                                                .buttonStyle(.plain)
+                                                .disabled(isActionDisabled)
                                             }
-                                            .buttonStyle(.plain)
-                                            .disabled(acceptingConversationId != nil)
                                         }
                                         .padding(.horizontal, 16)
                                         .padding(.bottom, 4)
                                     }
 
                                     if shouldShowCompletePaymentButton(for: listing) {
+                                        let isCompletingThis = isCompleting(listing)
                                         Button {
                                             Task { await completeListingAndReview(listing) }
                                         } label: {
-                                            BoenklereActionButtonLabel(
-                                                title: "Fullfør og utbetal \(formattedSafePaymentPrice(for: listing))",
-                                                systemImage: "checkmark.seal.fill"
-                                            )
+                                            HStack(spacing: 6) {
+                                                if isCompletingThis {
+                                                    ProgressView()
+                                                        .scaleEffect(0.8)
+                                                        .tint(.white)
+                                                } else {
+                                                    Image(systemName: "checkmark.circle.fill")
+                                                }
+                                                Text("Fullfør - oppdraget er utført")
+                                            }
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundColor(.white)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 12)
+                                            .background(Color(red: 0.11, green: 0.56, blue: 0.24))
+                                            .cornerRadius(24)
                                         }
                                         .buttonStyle(.plain)
-                                        .disabled(isCompleting(listing))
+                                        .disabled(isCompletingThis)
                                         .padding(.horizontal, 16)
                                         .padding(.bottom, 4)
                                     }
@@ -2652,17 +2709,19 @@ struct MyListingsSheet: View {
     }
 
     private func listingActionsMenu(for listing: APIListing) -> some View {
-        Menu {
-            if isSafePaymentActionEnabled(for: listing) {
+        let isCompleted = listing.status == "COMPLETED"
+        let isSafePaymentEnabled = isSafePaymentActionEnabled(for: listing)
+        return Menu {
+            if isSafePaymentEnabled || isCompleted {
                 Button("Fullfør og utbetal \(formattedSafePaymentPrice(for: listing))") {
                     Task { await completeListingAndReview(listing) }
                 }
-                .disabled(isCompleting(listing))
+                .disabled(isCompleting(listing) || isCompleted)
 
                 Button("Kanseller og refunder", role: .destructive) {
                     Task { await cancelSafePayment(for: listing) }
                 }
-                .disabled(isCanceling(listing))
+                .disabled(isCanceling(listing) || isCompleted)
             } else {
                 Button("Merk som utført") {
                     Task { await completeListingAndReview(listing) }
@@ -2855,6 +2914,40 @@ struct MyListingsSheet: View {
         } catch {
             errorMessage = "Kunne ikke bekrefte betalingen"
         }
+    }
+
+    @MainActor
+    private func declineSafePayment(for listing: APIListing) async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard let listingId = listing.id else { return }
+        guard let conversation = pendingAcceptanceByListingId[listingId] else { return }
+        guard !decliningListingIds.contains(listingId) else { return }
+
+        decliningListingIds.insert(listingId)
+        errorMessage = nil
+
+        do {
+            // Reset conversation safe payment state
+            _ = try await APIService.shared.declineSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+
+            // Send system message about decline
+            let declineName = buyerName(for: listing)
+            _ = try? await APIService.shared.sendMessage(
+                conversationId: conversation.id,
+                senderId: userId,
+                body: "SYSTEM:\(declineName) har avslått oppdraget."
+            )
+
+            pendingAcceptanceByListingId[listingId] = nil
+            await loadListings()
+        } catch {
+            errorMessage = "Kunne ikke avslå forespørselen"
+        }
+
+        decliningListingIds.remove(listingId)
     }
 }
 

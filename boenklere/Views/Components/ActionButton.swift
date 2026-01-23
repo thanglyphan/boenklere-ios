@@ -6,6 +6,7 @@ struct BoenklereActionButtonLabel: View {
     var height: CGFloat = 52
     var horizontalPadding: CGFloat = 18
     var isFullWidth: Bool = true
+    var isLoading: Bool = false
     var textColor: Color = Color(red: 0.07, green: 0.34, blue: 0.68)
     var fillColor: Color = Color(red: 0.82, green: 0.92, blue: 1.0)
 
@@ -20,6 +21,10 @@ struct BoenklereActionButtonLabel: View {
                 .fontWeight(.bold)
             if isFullWidth {
                 Spacer()
+            }
+            if isLoading {
+                ProgressView()
+                    .tint(textColor)
             }
         }
         .foregroundColor(textColor)

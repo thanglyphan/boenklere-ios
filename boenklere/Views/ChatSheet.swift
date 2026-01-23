@@ -33,6 +33,7 @@ struct ChatSheet: View {
     @State private var showCompleteSheet = false
     @State private var isCompletingListing = false
     @State private var isCancelingPayment = false
+    @State private var isDeclining = false
     @State private var showDeleteConfirm = false
     @State private var isDeletingListing = false
     @State private var showStripeOnboardingExplanation = false
@@ -135,6 +136,10 @@ struct ChatSheet: View {
             socketClient.onMessage = { message in
                 Task { @MainActor in
                     appendMessage(message)
+                    // Refresh listing when a system message arrives
+                    if message.body.hasPrefix("SYSTEM:") {
+                        await refreshListing()
+                    }
                 }
             }
         }
@@ -251,31 +256,40 @@ struct ChatSheet: View {
         currentListing.offersSafePayment == true
     }
 
-    private var hasExecutorAccepted: Bool {
-        let latestAcceptanceId = latestMessageId(in: messages, matching: isExecutorAcceptanceMessage)
-        let latestCancellationId = latestMessageId(in: messages, matching: isSafePaymentCancellationMessage)
-        if let cancelId = latestCancellationId {
-            if let acceptId = latestAcceptanceId {
-                if cancelId > acceptId {
-                    return false
-                }
-            } else if conversation?.safePaymentAcceptedAt == nil {
-                return false
-            }
+    /// Current listing status (from listing or local override)
+    private var listingStatus: String {
+        currentListing.status ?? "INITIATED"
+    }
+
+    /// Check if the current user has already accepted
+    private var hasCurrentUserAccepted: Bool {
+        if isOwner {
+            return listingStatus == "ACCEPTED_OWNER" || listingStatus == "ACCEPTED_BOTH"
+        } else {
+            return listingStatus == "ACCEPTED_CONTRACTOR" || listingStatus == "ACCEPTED_BOTH"
         }
+    }
+
+    /// Check if the other party has accepted
+    private var hasOtherPartyAccepted: Bool {
+        if isOwner {
+            return listingStatus == "ACCEPTED_CONTRACTOR" || listingStatus == "ACCEPTED_BOTH"
+        } else {
+            return listingStatus == "ACCEPTED_OWNER" || listingStatus == "ACCEPTED_BOTH"
+        }
+    }
+
+    /// Check if both parties have accepted
+    private var hasBothAccepted: Bool {
+        listingStatus == "ACCEPTED_BOTH"
+    }
+
+    private var hasExecutorAccepted: Bool {
+        // Executor (contractor) has accepted when status is ACCEPTED_CONTRACTOR or ACCEPTED_BOTH
         if didAcceptSafePayment {
             return true
         }
-        if conversation?.safePaymentAcceptedAt != nil {
-            return true
-        }
-        if let acceptId = latestAcceptanceId {
-            if let cancelId = latestCancellationId {
-                return acceptId > cancelId
-            }
-            return true
-        }
-        return false
+        return listingStatus == "ACCEPTED_CONTRACTOR" || listingStatus == "ACCEPTED_BOTH"
     }
 
     private var safePaymentStatus: String? {
@@ -283,28 +297,42 @@ struct ChatSheet: View {
     }
 
     private var isPaymentStarted: Bool {
-        guard let status = safePaymentStatus else { return false }
-        return status == "held" || status == "released"
+        // Check both listing status AND safePaymentStatus for robustness
+        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held" || safePaymentStatus == "released"
     }
 
     private var isPaymentHeld: Bool {
-        safePaymentStatus == "held"
+        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held"
     }
 
     private var shouldShowSafePaymentAction: Bool {
         guard authManager.isAuthenticated, isSafePayment else { return false }
+        guard listingStatus != "COMPLETED" else { return false }
+        
+        // Show accept button when:
+        // - Owner: contractor has accepted but owner hasn't paid yet
+        // - Contractor: hasn't accepted yet (regardless of owner status)
         if isOwner {
+            // Owner sees accept/pay button when contractor has accepted and payment not started
             return hasExecutorAccepted && !isPaymentStarted
+        } else {
+            // Contractor sees accept button when they haven't accepted yet
+            return !hasCurrentUserAccepted
         }
-        return !hasExecutorAccepted
     }
 
     private var shouldShowSafePaymentAcceptedInfo: Bool {
         guard authManager.isAuthenticated, isSafePayment else { return false }
+        guard currentListing.isCompleted != true else { return false }
+        guard listingStatus != "COMPLETED" else { return false }
+        
         if isOwner {
+            // Owner sees info when payment is started (held or released)
             return isPaymentStarted
+        } else {
+            // Contractor sees info when they have accepted
+            return hasCurrentUserAccepted
         }
-        return hasExecutorAccepted
     }
 
     private var otherUserLabel: String {
@@ -315,11 +343,7 @@ struct ChatSheet: View {
     }
 
     private var acceptActionTitle: String {
-        if isOwner {
-            return "Godta \(otherUserLabel)"
-        }
-        let priceValue = max(0, Int(currentListing.price))
-        return "Godta oppdraget for \(priceValue) kr"
+        "Godta"
     }
 
     private var acceptActionPrimaryMessage: String {
@@ -360,17 +384,39 @@ struct ChatSheet: View {
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button {
-                if isOwner {
-                    Task { await handleOwnerPaymentAction() }
-                } else {
-                    Task { await checkOnboardingAndProceed() }
+            HStack(spacing: 8) {
+                Button {
+                    if isOwner {
+                        Task { await handleOwnerPaymentAction() }
+                    } else {
+                        Task { await checkOnboardingAndProceed() }
+                    }
+                } label: {
+                    BoenklereActionButtonLabel(
+                        title: acceptActionTitle,
+                        systemImage: "checkmark.seal.fill",
+                        isLoading: isAcceptActionDisabled && !isDeclining
+                    )
                 }
-            } label: {
-                BoenklereActionButtonLabel(title: acceptActionTitle, systemImage: "checkmark.seal.fill")
+                .buttonStyle(.plain)
+                .disabled(isAcceptActionDisabled)
+
+                if isOwner {
+                    Button {
+                        Task { await declineSafePayment() }
+                    } label: {
+                        BoenklereActionButtonLabel(
+                            title: "Avslå",
+                            systemImage: "xmark.circle.fill",
+                            isLoading: isDeclining,
+                            textColor: .red,
+                            fillColor: Color.red.opacity(0.15)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAcceptActionDisabled)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(isAcceptActionDisabled)
         }
     }
 
@@ -391,7 +437,7 @@ struct ChatSheet: View {
     private var shouldShowCompletePaymentButton: Bool {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
         guard isPaymentHeld else { return false }
-        return currentListing.isCompleted != true
+        return currentListing.isCompleted != true && listingStatus != "COMPLETED"
     }
 
     private var isSafePaymentActionEnabled: Bool {
@@ -399,17 +445,18 @@ struct ChatSheet: View {
     }
 
     private var listingActionsButton: some View {
-        Menu {
-            if isSafePaymentActionEnabled {
+        let isCompleted = listingStatus == "COMPLETED"
+        return Menu {
+            if isSafePaymentActionEnabled || isCompleted {
                 Button("Fullfør og utbetal \(safePaymentPriceText)") {
                     Task { await completeListingAndReview() }
                 }
-                .disabled(isCompletingListing)
+                .disabled(isCompletingListing || isCompleted)
 
                 Button("Kanseller og refunder", role: .destructive) {
                     Task { await cancelSafePayment() }
                 }
-                .disabled(isCancelingPayment)
+                .disabled(isCancelingPayment || isCompleted)
             } else {
                 Button("Merk som utført") {
                     Task { await completeListingAndReview() }
@@ -435,10 +482,22 @@ struct ChatSheet: View {
         Button {
             Task { await completeListingAndReview() }
         } label: {
-            BoenklereActionButtonLabel(
-                title: "Fullfør og utbetal \(safePaymentPriceText)",
-                systemImage: "checkmark.seal.fill"
-            )
+            HStack(spacing: 6) {
+                if isCompletingListing {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                Text("Fullfør - oppdraget er utført")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(Color(red: 0.11, green: 0.56, blue: 0.24))
+            .cornerRadius(24)
         }
         .buttonStyle(.plain)
         .disabled(isCompletingListing)
@@ -524,6 +583,22 @@ struct ChatSheet: View {
     }
 
     @MainActor
+    private func refreshListing() async {
+        guard let listingId = currentListing.id else { return }
+        do {
+            let updatedListing = try await APIService.shared.getListing(id: listingId)
+            listingOverride = updatedListing
+            // Also refresh conversation to get updated safePaymentStatus
+            if let conv = conversation {
+                let updatedConversation = try await APIService.shared.getConversation(id: conv.id)
+                self.conversation = updatedConversation
+            }
+        } catch {
+            // Ignore refresh errors
+        }
+    }
+
+    @MainActor
     private func markListingConversationReadIfNeeded() async {
         guard !didMarkRead else { return }
         guard let conversation else { return }
@@ -598,36 +673,90 @@ struct ChatSheet: View {
         if isOwner {
             return
         }
-        guard let conversation else { return }
+        guard let listingId = currentListing.id else { return }
         guard let userId = authManager.userIdentifier else { return }
 
         isAcceptingTask = true
-        print("Stripe: accept start conversationId=\(conversation.id) userId=\(userId)")
+        print("Accept: start listingId=\(listingId) userId=\(userId)")
         do {
-            let response = try await APIService.shared.acceptSafePayment(
-                conversationId: conversation.id,
+            // First accept the listing status
+            let updatedListing = try await APIService.shared.acceptListing(
+                listingId: listingId,
                 userId: userId
             )
-            if response.requiresOnboarding {
-                if let urlString = response.onboardingUrl,
-                   let url = URL(string: urlString) {
-                    print("Stripe: onboarding required conversationId=\(conversation.id)")
-                    onboardingUrl = url
-                    shouldRetryAcceptAfterOnboarding = true
-                    showOnboarding = true
+            listingOverride = updatedListing
+            didAcceptSafePayment = true
+            print("Accept: listing status updated to \(updatedListing.status ?? "nil")")
+            
+            // Also call the old conversation-based accept for Stripe onboarding check
+            if let conversation {
+                let response = try await APIService.shared.acceptSafePayment(
+                    conversationId: conversation.id,
+                    userId: userId
+                )
+                if response.requiresOnboarding {
+                    if let urlString = response.onboardingUrl,
+                       let url = URL(string: urlString) {
+                        print("Stripe: onboarding required")
+                        onboardingUrl = url
+                        shouldRetryAcceptAfterOnboarding = true
+                        showOnboarding = true
+                    } else {
+                        errorMessage = "Kunne ikke starte Stripe onboarding"
+                    }
                 } else {
-                    errorMessage = "Kunne ikke starte Stripe onboarding"
+                    self.conversation = response.conversation
                 }
-            } else {
-                self.conversation = response.conversation
-                didAcceptSafePayment = true
-                print("Stripe: accept completed conversationId=\(conversation.id)")
             }
         } catch {
             errorMessage = "Kunne ikke oppdatere oppdraget"
-            print("Stripe: accept failed conversationId=\(conversation.id) error=\(error)")
+            print("Accept: failed listingId=\(listingId) error=\(error)")
         }
         isAcceptingTask = false
+    }
+
+    @MainActor
+    private func declineSafePayment() async {
+        guard !isDeclining else { return }
+        guard authManager.isAuthenticated else { return }
+        guard let listingId = currentListing.id else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isDeclining = true
+        do {
+            if let conversation {
+                // Reset conversation safe payment state FIRST (this also resets listing status to INITIATED)
+                // Must happen before sending system message to avoid race condition
+                let updated = try await APIService.shared.declineSafePayment(
+                    conversationId: conversation.id,
+                    userId: userId
+                )
+                self.conversation = updated
+                
+                // Refresh listing to get updated status
+                let updatedListing = try await APIService.shared.getListing(id: listingId)
+                listingOverride = updatedListing
+                didAcceptSafePayment = false
+                
+                // Send system message AFTER database is updated
+                // This ensures other clients get correct data when they refresh
+                let declineName = otherUserLabel
+                let message = try await APIService.shared.sendMessage(
+                    conversationId: conversation.id,
+                    senderId: userId,
+                    body: "SYSTEM:\(declineName) har avslått oppdraget."
+                )
+                appendMessage(message)
+            } else {
+                // No conversation, just refresh listing
+                let updatedListing = try await APIService.shared.getListing(id: listingId)
+                listingOverride = updatedListing
+                didAcceptSafePayment = false
+            }
+        } catch {
+            errorMessage = "Kunne ikke avslå oppdraget"
+        }
+        isDeclining = false
     }
 
     @MainActor
@@ -701,7 +830,7 @@ struct ChatSheet: View {
     }
 
     private var isAcceptActionDisabled: Bool {
-        isAcceptingTask || isCheckingOnboarding || isStartingPayment || (!isOwner && conversation == nil)
+        isAcceptingTask || isCheckingOnboarding || isStartingPayment || isDeclining || (!isOwner && conversation == nil)
     }
 
     private var ownerDisplayName: String {
@@ -1786,12 +1915,15 @@ struct ConversationChatSheet: View {
     @State private var showCompleteSheet = false
     @State private var isCompletingListing = false
     @State private var showReviewOwnerSheet = false
+    @State private var showReviewContractorSheet = false
     @State private var hasReviewedOwner = false
+    @State private var hasReviewedContractor = false
     @State private var isCheckingReview = false
     @State private var reviewRating: Int = 0
     @State private var reviewComment: String = ""
     @State private var isSubmittingReview = false
     @State private var isCancelingPayment = false
+    @State private var isDeclining = false
     @State private var showDeleteConfirm = false
     @State private var isDeletingListing = false
 
@@ -1825,11 +1957,20 @@ struct ConversationChatSheet: View {
                                 if shouldShowCompletePaymentButton {
                                     completePaymentButton
                                 }
-
-                                if shouldShowReviewOwnerButton {
-                                    reviewOwnerButton
-                                }
                             }
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                        }
+                        
+                        // Show review buttons when listing is COMPLETED (outside of safe payment info section)
+                        if shouldShowReviewOwnerButton {
+                            reviewOwnerButton
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                        }
+                        
+                        if shouldShowReviewContractorButton {
+                            reviewContractorButton
                                 .padding(.horizontal, 16)
                                 .padding(.top, 12)
                         }
@@ -1901,11 +2042,17 @@ struct ConversationChatSheet: View {
             await loadMessages()
             await loadListing()
             await loadOtherUser()
+            await checkIfAlreadyReviewedOwner()
+            await checkIfAlreadyReviewedContractor()
         }
         .onAppear {
             socketClient.onMessage = { message in
                 Task { @MainActor in
                     appendMessage(message)
+                    // Refresh listing when a system message arrives
+                    if message.body.hasPrefix("SYSTEM:") {
+                        await refreshListing()
+                    }
                 }
             }
         }
@@ -1998,6 +2145,22 @@ struct ConversationChatSheet: View {
             .presentationDetents([.medium])
             .presentationDragIndicator(.hidden)
         }
+        .sheet(isPresented: $showReviewContractorSheet) {
+            ReviewOwnerSheet(
+                ownerName: contractorDisplayName,
+                rating: $reviewRating,
+                comment: $reviewComment,
+                isSubmitting: isSubmittingReview,
+                onSubmit: {
+                    Task { await submitContractorReview() }
+                },
+                onCancel: {
+                    showReviewContractorSheet = false
+                }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.hidden)
+        }
         .sheet(isPresented: $showStripeOnboardingExplanation) {
             StripeOnboardingSheet(
                 onContinue: {
@@ -2019,7 +2182,10 @@ struct ConversationChatSheet: View {
             Text("Dette kan ikke angres.")
         }
         .onChange(of: listing?.id) { _, _ in
-            Task { await checkIfAlreadyReviewedOwner() }
+            Task { 
+                await checkIfAlreadyReviewedOwner()
+                await checkIfAlreadyReviewedContractor()
+            }
         }
         .presentationDetents([.height(70), .large], selection: $sheetDetent)
         .presentationDragIndicator(.hidden)
@@ -2102,6 +2268,10 @@ struct ConversationChatSheet: View {
             collapsedActionButton(title: "Gi vurdering", icon: "star.fill") {
                 showReviewOwnerSheet = true
             }
+        } else if shouldShowReviewContractorButton {
+            collapsedActionButton(title: "Gi vurdering", icon: "star.fill") {
+                showReviewContractorSheet = true
+            }
         } else {
             Text(conversation.listingTitle)
                 .font(.title3)
@@ -2163,17 +2333,18 @@ struct ConversationChatSheet: View {
     }
 
     private var listingActionsButton: some View {
-        Menu {
-            if isSafePaymentActionEnabled {
+        let isCompleted = listing?.status == "COMPLETED"
+        return Menu {
+            if isSafePaymentActionEnabled || isCompleted {
                 Button("Fullfør og utbetal \(safePaymentPriceText)") {
                     Task { await completeListingAndReview() }
                 }
-                .disabled(isCompletingListing)
+                .disabled(isCompletingListing || isCompleted)
 
                 Button("Kanseller og refunder", role: .destructive) {
                     Task { await cancelSafePayment() }
                 }
-                .disabled(isCancelingPayment)
+                .disabled(isCancelingPayment || isCompleted)
             } else {
                 Button("Merk som utført") {
                     Task { await completeListingAndReview() }
@@ -2195,31 +2366,40 @@ struct ConversationChatSheet: View {
         .accessibilityLabel("Flere valg")
     }
 
-    private var hasExecutorAccepted: Bool {
-        let latestAcceptanceId = latestMessageId(in: messages, matching: isExecutorAcceptanceMessage)
-        let latestCancellationId = latestMessageId(in: messages, matching: isSafePaymentCancellationMessage)
-        if let cancelId = latestCancellationId {
-            if let acceptId = latestAcceptanceId {
-                if cancelId > acceptId {
-                    return false
-                }
-            } else if conversation.safePaymentAcceptedAt == nil {
-                return false
-            }
+    /// Current listing status
+    private var listingStatus: String {
+        listing?.status ?? "INITIATED"
+    }
+
+    /// Check if the current user has already accepted
+    private var hasCurrentUserAccepted: Bool {
+        if isOwner {
+            return listingStatus == "ACCEPTED_OWNER" || listingStatus == "ACCEPTED_BOTH"
+        } else {
+            return listingStatus == "ACCEPTED_CONTRACTOR" || listingStatus == "ACCEPTED_BOTH"
         }
+    }
+
+    /// Check if the other party has accepted
+    private var hasOtherPartyAccepted: Bool {
+        if isOwner {
+            return listingStatus == "ACCEPTED_CONTRACTOR" || listingStatus == "ACCEPTED_BOTH"
+        } else {
+            return listingStatus == "ACCEPTED_OWNER" || listingStatus == "ACCEPTED_BOTH"
+        }
+    }
+
+    /// Check if both parties have accepted
+    private var hasBothAccepted: Bool {
+        listingStatus == "ACCEPTED_BOTH"
+    }
+
+    private var hasExecutorAccepted: Bool {
+        // Executor (contractor) has accepted when status is ACCEPTED_CONTRACTOR or ACCEPTED_BOTH
         if didAcceptSafePayment {
             return true
         }
-        if conversation.safePaymentAcceptedAt != nil {
-            return true
-        }
-        if let acceptId = latestAcceptanceId {
-            if let cancelId = latestCancellationId {
-                return acceptId > cancelId
-            }
-            return true
-        }
-        return false
+        return listingStatus == "ACCEPTED_CONTRACTOR" || listingStatus == "ACCEPTED_BOTH"
     }
 
     private var safePaymentStatus: String? {
@@ -2227,34 +2407,48 @@ struct ConversationChatSheet: View {
     }
 
     private var isPaymentStarted: Bool {
-        guard let status = safePaymentStatus else { return false }
-        return status == "held" || status == "released"
+        // Check both listing status AND safePaymentStatus for robustness
+        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held" || safePaymentStatus == "released"
     }
 
     private var isPaymentHeld: Bool {
-        safePaymentStatus == "held"
+        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held"
     }
 
     private var shouldShowSafePaymentAction: Bool {
         guard authManager.isAuthenticated, isSafePayment else { return false }
+        guard listingStatus != "COMPLETED" else { return false }
+        
+        // Show accept button when:
+        // - Owner: contractor has accepted but owner hasn't paid yet
+        // - Contractor: hasn't accepted yet (regardless of owner status)
         if isOwner {
+            // Owner sees accept/pay button when contractor has accepted and payment not started
             return hasExecutorAccepted && !isPaymentStarted
+        } else {
+            // Contractor sees accept button when they haven't accepted yet
+            return !hasCurrentUserAccepted
         }
-        return !hasExecutorAccepted
     }
 
     private var shouldShowSafePaymentAcceptedInfo: Bool {
         guard authManager.isAuthenticated, isSafePayment else { return false }
+        guard listing?.isCompleted != true else { return false }
+        guard listingStatus != "COMPLETED" else { return false }
+        
         if isOwner {
+            // Owner sees info when payment is started (held or released)
             return isPaymentStarted
+        } else {
+            // Contractor sees info when they have accepted
+            return hasCurrentUserAccepted
         }
-        return hasExecutorAccepted
     }
 
     private var acceptActionTitle: String? {
         guard let listing else { return nil }
         if isOwner {
-            return "Godta \(displayOtherName) og betal"
+            return "Godta og betal"
         }
         let priceValue = max(0, Int(listing.price))
         return "Godta oppdraget for \(priceValue) kr"
@@ -2298,17 +2492,39 @@ struct ConversationChatSheet: View {
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button {
-                if isOwner {
-                    Task { await handleOwnerPaymentAction() }
-                } else {
-                    Task { await checkOnboardingAndProceed() }
+            HStack(spacing: 8) {
+                Button {
+                    if isOwner {
+                        Task { await handleOwnerPaymentAction() }
+                    } else {
+                        Task { await checkOnboardingAndProceed() }
+                    }
+                } label: {
+                    BoenklereActionButtonLabel(
+                        title: acceptActionTitle ?? "Godta",
+                        systemImage: "checkmark.seal.fill",
+                        isLoading: (isAcceptingTask || isCheckingOnboarding || isStartingPayment) && !isDeclining
+                    )
                 }
-            } label: {
-                BoenklereActionButtonLabel(title: acceptActionTitle ?? "Godta", systemImage: "checkmark.seal.fill")
+                .buttonStyle(.plain)
+                .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment || isDeclining)
+
+                if isOwner {
+                    Button {
+                        Task { await declineSafePayment() }
+                    } label: {
+                        BoenklereActionButtonLabel(
+                            title: "Avslå",
+                            systemImage: "xmark.circle.fill",
+                            isLoading: isDeclining,
+                            textColor: .red,
+                            fillColor: Color.red.opacity(0.15)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment || isDeclining)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment)
         }
     }
 
@@ -2329,17 +2545,29 @@ struct ConversationChatSheet: View {
     private var shouldShowCompletePaymentButton: Bool {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
         guard isPaymentHeld else { return false }
-        return listing?.isCompleted != true
+        return listing?.isCompleted != true && listing?.status != "COMPLETED"
     }
 
     private var completePaymentButton: some View {
         Button {
             Task { await completeListingAndReview() }
         } label: {
-            BoenklereActionButtonLabel(
-                title: "Fullfør og utbetal \(safePaymentPriceText)",
-                systemImage: "checkmark.seal.fill"
-            )
+            HStack(spacing: 6) {
+                if isCompletingListing {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                Text("Fullfør - oppdraget er utført")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(Color(red: 0.11, green: 0.56, blue: 0.24))
+            .cornerRadius(24)
         }
         .buttonStyle(.plain)
         .disabled(isCompletingListing)
@@ -2348,8 +2576,17 @@ struct ConversationChatSheet: View {
     private var shouldShowReviewOwnerButton: Bool {
         guard authManager.isAuthenticated else { return false }
         guard !isOwner else { return false }
-        guard listing?.isCompleted == true else { return false }
+        guard listing?.status == "COMPLETED" else { return false }
         guard !hasReviewedOwner else { return false }
+        return true
+    }
+    
+    private var shouldShowReviewContractorButton: Bool {
+        guard authManager.isAuthenticated else { return false }
+        guard isOwner else { return false }
+        guard listing?.status == "COMPLETED" else { return false }
+        guard listing?.acceptedContractorId != nil else { return false }
+        guard !hasReviewedContractor else { return false }
         return true
     }
 
@@ -2359,6 +2596,18 @@ struct ConversationChatSheet: View {
         } label: {
             BoenklereActionButtonLabel(
                 title: "Gi vurdering av \(ownerDisplayName)",
+                systemImage: "star.fill"
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var reviewContractorButton: some View {
+        Button {
+            showReviewContractorSheet = true
+        } label: {
+            BoenklereActionButtonLabel(
+                title: "Gi vurdering av \(contractorDisplayName)",
                 systemImage: "star.fill"
             )
         }
@@ -2375,6 +2624,11 @@ struct ConversationChatSheet: View {
     }
 
     private var executorDisplayName: String {
+        let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "oppdragstaker" : name
+    }
+    
+    private var contractorDisplayName: String {
         let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "oppdragstaker" : name
     }
@@ -2545,6 +2799,19 @@ struct ConversationChatSheet: View {
     }
 
     @MainActor
+    private func refreshListing() async {
+        do {
+            let updatedListing = try await APIService.shared.getListing(id: conversation.listingId)
+            listing = updatedListing
+            // Also refresh conversation to get updated safePaymentStatus
+            let updatedConversation = try await APIService.shared.getConversation(id: conversation.id)
+            safePaymentStatusOverride = updatedConversation.safePaymentStatus
+        } catch {
+            // Ignore refresh errors
+        }
+    }
+
+    @MainActor
     private func loadOtherUser() async {
         guard let otherUserId else { return }
 
@@ -2683,11 +2950,22 @@ struct ConversationChatSheet: View {
         guard !isAcceptingTask else { return }
         guard authManager.isAuthenticated else { return }
         if isOwner { return }
+        guard let listingId = listing?.id else { return }
         guard let userId = authManager.userIdentifier else { return }
 
         isAcceptingTask = true
-        print("Stripe: accept start conversationId=\(conversation.id) userId=\(userId)")
+        print("Accept: start listingId=\(listingId) userId=\(userId)")
         do {
+            // First accept the listing status
+            let updatedListing = try await APIService.shared.acceptListing(
+                listingId: listingId,
+                userId: userId
+            )
+            listing = updatedListing
+            didAcceptSafePayment = true
+            print("Accept: listing status updated to \(updatedListing.status ?? "nil")")
+            
+            // Also call the old conversation-based accept for Stripe onboarding check
             let response = try await APIService.shared.acceptSafePayment(
                 conversationId: conversation.id,
                 userId: userId
@@ -2695,7 +2973,7 @@ struct ConversationChatSheet: View {
             if response.requiresOnboarding {
                 if let urlString = response.onboardingUrl,
                    let url = URL(string: urlString) {
-                    print("Stripe: onboarding required conversationId=\(conversation.id) onboardingUrl=\(response.onboardingUrl ?? "nil")")
+                    print("Stripe: onboarding required")
                     onboardingUrl = url
                     shouldRetryAcceptAfterOnboarding = true
                     showOnboarding = true
@@ -2703,13 +2981,11 @@ struct ConversationChatSheet: View {
                     errorMessage = "Kunne ikke starte Stripe onboarding"
                 }
             } else {
-                didAcceptSafePayment = true
                 safePaymentStatusOverride = response.conversation.safePaymentStatus
-                print("Stripe: accept completed conversationId=\(conversation.id)")
             }
         } catch {
             errorMessage = "Kunne ikke oppdatere oppdraget"
-            print("Stripe: accept failed conversationId=\(conversation.id) error=\(error)")
+            print("Accept: failed listingId=\(listingId) error=\(error)")
         }
         isAcceptingTask = false
     }
@@ -2822,6 +3098,25 @@ struct ConversationChatSheet: View {
         }
         isCheckingReview = false
     }
+    
+    @MainActor
+    private func checkIfAlreadyReviewedContractor() async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard isOwner else { return }
+        guard let listingId = listing?.id else { return }
+        guard let contractorId = listing?.acceptedContractorId else { return }
+
+        isCheckingReview = true
+        do {
+            let reviews = try await APIService.shared.getReviewsByReviewer(userId: userId)
+            hasReviewedContractor = reviews.contains { review in
+                review.listingId == listingId && review.revieweeId == contractorId
+            }
+        } catch {
+            hasReviewedContractor = false
+        }
+        isCheckingReview = false
+    }
 
     @MainActor
     private func submitOwnerReview() async {
@@ -2864,6 +3159,72 @@ struct ConversationChatSheet: View {
             errorMessage = "Kunne ikke lagre vurderingen"
         }
         isSubmittingReview = false
+    }
+    
+    @MainActor
+    private func submitContractorReview() async {
+        guard let userId = authManager.userIdentifier else { return }
+        guard let listingId = listing?.id else { return }
+        guard let contractorId = listing?.acceptedContractorId else { return }
+        guard reviewRating > 0 else {
+            errorMessage = "Du må velge en vurdering"
+            return
+        }
+
+        isSubmittingReview = true
+        do {
+            _ = try await APIService.shared.createReview(
+                listingId: listingId,
+                reviewerId: userId,
+                revieweeId: contractorId,
+                rating: reviewRating,
+                comment: reviewComment.isEmpty ? nil : reviewComment
+            )
+            hasReviewedContractor = true
+            showReviewContractorSheet = false
+            reviewRating = 0
+            reviewComment = ""
+        } catch {
+            errorMessage = "Kunne ikke lagre vurderingen"
+        }
+        isSubmittingReview = false
+    }
+
+    @MainActor
+    private func declineSafePayment() async {
+        guard !isDeclining else { return }
+        guard authManager.isAuthenticated else { return }
+        guard let listingId = listing?.id else { return }
+        guard let userId = authManager.userIdentifier else { return }
+
+        isDeclining = true
+        do {
+            // Reset conversation safe payment state FIRST (this also resets listing status to INITIATED)
+            // Must happen before sending system message to avoid race condition
+            let updated = try await APIService.shared.declineSafePayment(
+                conversationId: conversation.id,
+                userId: userId
+            )
+            safePaymentStatusOverride = updated.safePaymentStatus
+            
+            // Refresh listing to get updated status
+            let updatedListing = try await APIService.shared.getListing(id: listingId)
+            listing = updatedListing
+            didAcceptSafePayment = false
+            
+            // Send system message AFTER database is updated
+            // This ensures other clients get correct data when they refresh
+            let declineName = displayOtherName
+            let message = try await APIService.shared.sendMessage(
+                conversationId: conversation.id,
+                senderId: userId,
+                body: "SYSTEM:\(declineName) har avslått oppdraget."
+            )
+            appendMessage(message)
+        } catch {
+            errorMessage = "Kunne ikke avslå oppdraget"
+        }
+        isDeclining = false
     }
 }
 
@@ -3287,6 +3648,7 @@ private struct APIMessageEvent: Codable {
 private let systemMessagePrefix = "SYSTEM:"
 private let executorAcceptanceMarker = "har godtatt oppdraget for"
 private let safePaymentCancellationMarker = "har kansellert oppdraget"
+private let safePaymentDeclineMarker = "har avslått oppdraget"
 
 private func parseSystemMessage(_ body: String) -> (isSystem: Bool, text: String) {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3312,7 +3674,8 @@ private func isExecutorAcceptanceMessage(_ body: String) -> Bool {
 private func isSafePaymentCancellationMessage(_ body: String) -> Bool {
     let parsed = parseSystemMessage(body)
     guard parsed.isSystem else { return false }
-    return parsed.text.localizedCaseInsensitiveContains(safePaymentCancellationMarker)
+    return parsed.text.localizedCaseInsensitiveContains(safePaymentCancellationMarker) ||
+           parsed.text.localizedCaseInsensitiveContains(safePaymentDeclineMarker)
 }
 
 private func latestMessageId(
