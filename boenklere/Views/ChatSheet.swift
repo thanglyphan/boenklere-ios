@@ -66,13 +66,14 @@ struct ChatSheet: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 12)
                 } else if shouldShowSafePaymentAcceptedInfo {
-                    VStack(spacing: 8) {
-                        acceptedInfoSection
+                    acceptedInfoSection
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                }
 
-                        if shouldShowCompletePaymentButton {
-                            completePaymentButton
-                        }
-                    }
+                // Vis fullfør-knappen når begge har godtatt
+                if currentListing.offersSafePayment == true && isOwner && listingStatus == "ACCEPTED_BOTH" {
+                    completePaymentButton
                         .padding(.horizontal, 16)
                         .padding(.top, 12)
                 }
@@ -201,7 +202,7 @@ struct ChatSheet: View {
         .sheet(isPresented: $showCompleteSheet) {
             CompleteListingSheet(
                 listing: currentListing,
-                onReviewSaved: { updatedListing in
+                onCompleted: { updatedListing in
                     if let updatedListing {
                         listingOverride = updatedListing
                     }
@@ -436,8 +437,9 @@ struct ChatSheet: View {
 
     private var shouldShowCompletePaymentButton: Bool {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
-        guard isPaymentHeld else { return false }
-        return currentListing.isCompleted != true && listingStatus != "COMPLETED"
+        guard listingStatus != "COMPLETED" else { return false }
+        guard currentListing.isCompleted != true else { return false }
+        return true
     }
 
     private var isSafePaymentActionEnabled: Bool {
@@ -479,28 +481,34 @@ struct ChatSheet: View {
     }
 
     private var completePaymentButton: some View {
-        Button {
-            Task { await completeListingAndReview() }
-        } label: {
-            HStack(spacing: 6) {
-                if isCompletingListing {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                        .tint(.white)
-                } else {
-                    Image(systemName: "checkmark.circle.fill")
+        HStack(spacing: 8) {
+            Button {
+                Task { await completeListingAndReview() }
+            } label: {
+                HStack(spacing: 6) {
+                    if isCompletingListing {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                    }
+                    Text("Fullfør - oppdraget er utført")
                 }
-                Text("Fullfør - oppdraget er utført")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color(red: 0.11, green: 0.56, blue: 0.24))
+                .cornerRadius(24)
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(Color(red: 0.11, green: 0.56, blue: 0.24))
-            .cornerRadius(24)
+            .buttonStyle(.plain)
+            .disabled(isCompletingListing)
+
+            SafePaymentInfoTooltipButton(
+                text: "Trykk «Fullfør» når jobben er ferdig for å utbetale til utføreren.\nUtbetaling skjer automatisk etter 6 dager hvis du ikke gjør noe. Du kan kansellere før det via menyen."
+            )
         }
-        .buttonStyle(.plain)
-        .disabled(isCompletingListing)
     }
 
     private var messageRows: [MessageRow] {
@@ -1951,13 +1959,14 @@ struct ConversationChatSheet: View {
                                 .padding(.horizontal, 16)
                                 .padding(.top, 12)
                         } else if shouldShowSafePaymentAcceptedInfo {
-                            VStack(spacing: 8) {
-                                acceptedInfoSection
+                            acceptedInfoSection
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
+                        }
 
-                                if shouldShowCompletePaymentButton {
-                                    completePaymentButton
-                                }
-                            }
+                        // Vis fullfør-knappen når begge har godtatt
+                        if listing.offersSafePayment == true && isOwner && listing.status == "ACCEPTED_BOTH" {
+                            completePaymentButton
                                 .padding(.horizontal, 16)
                                 .padding(.top, 12)
                         }
@@ -2118,7 +2127,7 @@ struct ConversationChatSheet: View {
             if let listing {
                 CompleteListingSheet(
                     listing: listing,
-                    onReviewSaved: { updatedListing in
+                    onCompleted: { updatedListing in
                         if let updatedListing {
                             self.listing = updatedListing
                         }
@@ -2544,33 +2553,40 @@ struct ConversationChatSheet: View {
 
     private var shouldShowCompletePaymentButton: Bool {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
-        guard isPaymentHeld else { return false }
-        return listing?.isCompleted != true && listing?.status != "COMPLETED"
+        guard listing?.status != "COMPLETED" else { return false }
+        guard listing?.isCompleted != true else { return false }
+        return true
     }
 
     private var completePaymentButton: some View {
-        Button {
-            Task { await completeListingAndReview() }
-        } label: {
-            HStack(spacing: 6) {
-                if isCompletingListing {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                        .tint(.white)
-                } else {
-                    Image(systemName: "checkmark.circle.fill")
+        HStack(spacing: 8) {
+            Button {
+                Task { await completeListingAndReview() }
+            } label: {
+                HStack(spacing: 6) {
+                    if isCompletingListing {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                    }
+                    Text("Fullfør - oppdraget er utført")
                 }
-                Text("Fullfør - oppdraget er utført")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color(red: 0.11, green: 0.56, blue: 0.24))
+                .cornerRadius(24)
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(Color(red: 0.11, green: 0.56, blue: 0.24))
-            .cornerRadius(24)
+            .buttonStyle(.plain)
+            .disabled(isCompletingListing)
+
+            SafePaymentInfoTooltipButton(
+                text: "Trykk «Fullfør» når jobben er ferdig for å utbetale til utføreren.\nUtbetaling skjer automatisk etter 6 dager hvis du ikke gjør noe. Du kan kansellere før det via menyen."
+            )
         }
-        .buttonStyle(.plain)
-        .disabled(isCompletingListing)
     }
 
     private var shouldShowReviewOwnerButton: Bool {
@@ -3858,6 +3874,44 @@ private struct ReviewOwnerSheet: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
+        }
+    }
+}
+
+private struct SafePaymentInfoTooltipButton: View {
+    let text: String
+    @State private var showInfo = false
+    @State private var isPulsing = false
+
+    var body: some View {
+        Button {
+            showInfo = true
+        } label: {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 24))
+                .foregroundColor(Color.blue)
+                .scaleEffect(isPulsing ? 1.15 : 1.0)
+                .opacity(isPulsing ? 0.7 : 1.0)
+                .animation(
+                    .easeInOut(duration: 0.8)
+                    .repeatForever(autoreverses: true),
+                    value: isPulsing
+                )
+                .onAppear { isPulsing = true }
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showInfo) {
+            ScrollView {
+                Text(text)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+            }
+            .frame(width: 300)
+            .frame(maxHeight: 300)
+            .presentationCompactAdaptation(.popover)
         }
     }
 }
