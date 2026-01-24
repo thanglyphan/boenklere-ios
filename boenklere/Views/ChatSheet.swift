@@ -324,7 +324,6 @@ struct ChatSheet: View {
 
     private var shouldShowSafePaymentAcceptedInfo: Bool {
         guard authManager.isAuthenticated, isSafePayment else { return false }
-        guard currentListing.isCompleted != true else { return false }
         guard listingStatus != "COMPLETED" else { return false }
         
         if isOwner {
@@ -438,7 +437,6 @@ struct ChatSheet: View {
     private var shouldShowCompletePaymentButton: Bool {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
         guard listingStatus != "COMPLETED" else { return false }
-        guard currentListing.isCompleted != true else { return false }
         return true
     }
 
@@ -463,7 +461,7 @@ struct ChatSheet: View {
                 Button("Merk som utført") {
                     Task { await completeListingAndReview() }
                 }
-                .disabled(isCompletingListing || currentListing.isCompleted == true)
+                .disabled(isCompletingListing || listingStatus == "COMPLETED")
 
                 Button("Slett annonse", role: .destructive) {
                     showDeleteConfirm = true
@@ -930,7 +928,7 @@ struct ChatSheet: View {
                 longitude: currentListing.longitude,
                 price: currentListing.price,
                 offersSafePayment: currentListing.offersSafePayment ?? false,
-                isCompleted: true,
+                status: "COMPLETED",
                 userId: userId,
                 imageData: nil
             )
@@ -2358,7 +2356,7 @@ struct ConversationChatSheet: View {
                 Button("Merk som utført") {
                     Task { await completeListingAndReview() }
                 }
-                .disabled(isCompletingListing || listing?.isCompleted == true)
+                .disabled(isCompletingListing || listing?.status == "COMPLETED")
 
                 Button("Slett annonse", role: .destructive) {
                     showDeleteConfirm = true
@@ -2442,7 +2440,6 @@ struct ConversationChatSheet: View {
 
     private var shouldShowSafePaymentAcceptedInfo: Bool {
         guard authManager.isAuthenticated, isSafePayment else { return false }
-        guard listing?.isCompleted != true else { return false }
         guard listingStatus != "COMPLETED" else { return false }
         
         if isOwner {
@@ -2554,7 +2551,6 @@ struct ConversationChatSheet: View {
     private var shouldShowCompletePaymentButton: Bool {
         guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
         guard listing?.status != "COMPLETED" else { return false }
-        guard listing?.isCompleted != true else { return false }
         return true
     }
 
@@ -2732,7 +2728,7 @@ struct ConversationChatSheet: View {
                 longitude: listing.longitude,
                 price: listing.price,
                 offersSafePayment: listing.offersSafePayment ?? false,
-                isCompleted: true,
+                status: "COMPLETED",
                 userId: userId,
                 imageData: nil
             )

@@ -2807,7 +2807,7 @@ struct MyListingsSheet: View {
                 longitude: listing.longitude,
                 price: listing.price,
                 offersSafePayment: listing.offersSafePayment ?? false,
-                isCompleted: true,
+                status: "COMPLETED",
                 userId: userId,
                 imageData: nil
             )
@@ -4312,7 +4312,7 @@ struct EditListingSheet: View {
                 longitude: draftLongitude,
                 price: priceToSave,
                 offersSafePayment: offersSafePayment,
-                isCompleted: nil,
+                status: nil,
                 userId: userId,
                 imageData: selectedImageData
             )

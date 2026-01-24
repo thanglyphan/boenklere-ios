@@ -21,7 +21,6 @@ struct APIListing: Codable, Identifiable, Hashable {
     let offersSafePayment: Bool?
     let userId: String
     let userName: String?
-    let isCompleted: Bool?
     let status: String?
     let acceptedContractorId: String?
     let createdAt: String?
@@ -310,7 +309,7 @@ class APIService {
         longitude: Double?,
         price: Double,
         offersSafePayment: Bool,
-        isCompleted: Bool? = nil,
+        status: String? = nil,
         userId: String,
         imageData: Data?
     ) async throws -> APIListing {
@@ -334,10 +333,10 @@ class APIService {
             ("userId", userId)
         ]
 
-        if let isCompleted {
+        if let status {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"isCompleted\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(isCompleted)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"status\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(status)\r\n".data(using: .utf8)!)
         }
 
         for (name, value) in fields where !value.isEmpty {
