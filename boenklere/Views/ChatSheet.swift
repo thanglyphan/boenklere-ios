@@ -48,14 +48,6 @@ struct ChatSheet: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
             VStack(spacing: 0) {
-                ChatHeader(
-                    title: currentListing.title,
-                    isModalStyle: isModalStyle,
-                    trailingView: headerTrailingView
-                ) {
-                    dismiss()
-                }
-
                 ListingRow(
                     listing: currentListing,
                     userLocation: nil,
@@ -132,7 +124,28 @@ struct ChatSheet: View {
             }
 
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle(currentListing.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if isModalStyle {
+                    EmptyView()
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                HStack(spacing: 8) {
+                    if isOwner {
+                        listingActionsButton
+                    }
+                    if isModalStyle {
+                        Button(action: { dismiss() }) {
+                            Image(systemName: "xmark")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
         .task {
             await startConversation()
         }
@@ -173,7 +186,7 @@ struct ChatSheet: View {
             )
             .environmentObject(authManager)
             .presentationDetents([.large], selection: $listingSheetDetent)
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showEditListingSheet) {
             EditListingSheet(
@@ -185,7 +198,7 @@ struct ChatSheet: View {
             )
             .environmentObject(authManager)
             .presentationDetents([.large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showUserReviews) {
             UserReviewsSheet(userId: currentListing.userId, userName: displayUserName)
@@ -213,7 +226,7 @@ struct ChatSheet: View {
             )
             .environmentObject(authManager)
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStripeOnboardingExplanation) {
             StripeOnboardingSheet(
@@ -225,7 +238,7 @@ struct ChatSheet: View {
                 }
             )
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Slett annonse", role: .destructive) {
@@ -271,11 +284,6 @@ struct ChatSheet: View {
     private var isOwner: Bool {
         guard let userId = authManager.userIdentifier else { return false }
         return currentListing.userId == userId
-    }
-
-    private var headerTrailingView: AnyView? {
-        guard isOwner else { return nil }
-        return AnyView(listingActionsButton)
     }
 
     private var displayUserName: String {
@@ -382,7 +390,7 @@ struct ChatSheet: View {
                 } label: {
                     BoenklereActionButtonLabel(
                         title: "Avslå",
-                        systemImage: "xmark.circle.fill",
+                        systemImage: "xmark",
                         isLoading: isDeclining,
                         textColor: .red,
                         fillColor: Color.red.opacity(0.15)
@@ -432,13 +440,9 @@ struct ChatSheet: View {
                 }
             }
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 44, height: 44)
-                .background(Color.gray, in: Circle())
+            Image(systemName: "ellipsis.circle.fill")
+                .foregroundColor(.secondary)
         }
-        .buttonStyle(.plain)
         .accessibilityLabel("Flere valg")
     }
 
@@ -907,8 +911,6 @@ struct ConversationsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            sheetHeader
-
             if !authManager.isAuthenticated {
                 VStack(spacing: 12) {
                     Image(systemName: "lock.fill")
@@ -958,60 +960,23 @@ struct ConversationsSheet: View {
                 }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Meldinger")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if showsCloseButton {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
         .task {
             await loadConversations()
         }
         .onReceive(NotificationCenter.default.publisher(for: .didMarkConversationRead)) { _ in
             Task { await loadConversations() }
-        }
-    }
-
-    private var sheetHeader: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color(.systemGray3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 5)
-                .padding(.bottom, 3)
-
-            HStack {
-                if showsBackButton {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.gray, in: Circle())
-                    }
-                }
-
-                Text("Meldinger")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-
-                Spacer()
-
-                if showsCloseButton {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.gray, in: Circle())
-                    }
-                } else if showsBackButton {
-                    Color.clear
-                        .frame(width: 44, height: 44)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
         }
     }
 
@@ -1193,37 +1158,32 @@ private struct ListingConversationsView: View {
     var body: some View {
         let currentUserId = authManager.userIdentifier
 
-        VStack(spacing: 0) {
-            ChatHeader(title: group.listingTitle, isModalStyle: false) {
-                dismiss()
-            }
+        ScrollView {
+            VStack(spacing: 12) {
+                ForEach(group.conversations) { conversation in
+                    let otherId = currentUserId == conversation.buyerId
+                        ? conversation.sellerId
+                        : conversation.buyerId
+                    let otherName = userNames[otherId]
 
-            ScrollView {
-                VStack(spacing: 12) {
-                    ForEach(group.conversations) { conversation in
-                        let otherId = currentUserId == conversation.buyerId
-                            ? conversation.sellerId
-                            : conversation.buyerId
-                        let otherName = userNames[otherId]
-
-                        NavigationLink {
-                            ConversationChatSheet(conversation: conversation, isModalStyle: false)
-                                .environmentObject(authManager)
-                        } label: {
-                            ListingConversationDetailRow(
-                                conversation: conversation,
-                                participantName: otherName
-                            )
-                        }
-                        .buttonStyle(.plain)
+                    NavigationLink {
+                        ConversationChatSheet(conversation: conversation, isModalStyle: false)
+                            .environmentObject(authManager)
+                    } label: {
+                        ListingConversationDetailRow(
+                            conversation: conversation,
+                            participantName: otherName
+                        )
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 20)
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle(group.listingTitle)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -1383,36 +1343,7 @@ private struct UserReviewsSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                Capsule()
-                    .fill(Color(.systemGray3))
-                    .frame(width: 36, height: 5)
-                    .padding(.top, 5)
-                    .padding(.bottom, 3)
-
-                HStack {
-                    Text("Vurderinger")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-
-                    Spacer()
-
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.gray, in: Circle())
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-            }
-
+        NavigationStack {
             ScrollView {
                 VStack(spacing: 12) {
                     Text("For \(userName)")
@@ -1445,8 +1376,17 @@ private struct UserReviewsSheet: View {
             .refreshable {
                 await loadReviews()
             }
+            .navigationTitle("Vurderinger")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
         }
-        .toolbar(.hidden, for: .navigationBar)
         .task {
             await loadReviews()
         }
@@ -1830,99 +1770,11 @@ struct ConversationChatSheet: View {
                 collapsedHeader
 
                 if !isCollapsed {
-                    if let listing {
-                        ListingRow(
-                            listing: listing,
-                            userLocation: nil,
-                            isDisabled: listingStatus == "COMPLETED"
-                        ) {
-                            if isOwner {
-                                showEditListingSheet = true
-                            } else {
-                                showListingSheet = true
-                            }
-                        }
-
-                        if shouldShowSafePaymentAction {
-                            acceptActionSection
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                        }
-
-                        // Vis fullfør-knappen når begge har godtatt
-                        if listing.offersSafePayment == true && isOwner && listing.status == "ACCEPTED_BOTH" {
-                            completePaymentButton
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                        }
-                        
-                        // Show review buttons when listing is COMPLETED (outside of safe payment info section)
-                        if shouldShowReviewOwnerButton {
-                            reviewOwnerButton
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                        }
-                        
-                        if shouldShowReviewContractorButton {
-                            reviewContractorButton
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                        }
-
-                    } else if isLoadingListing {
-                        ProgressView()
-                            .padding(.vertical, 8)
-                    }
+                    expandedListingSection
                 }
 
                 if !isCollapsed {
-                    if !authManager.isAuthenticated {
-                        VStack(spacing: 12) {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 28))
-                                .foregroundColor(.secondary)
-                            Text("Logg inn for å sende meldinger")
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollViewReader { proxy in
-                            ScrollView {
-                                LazyVStack(spacing: 0) {
-                                    ForEach(messageRows) { row in
-                                        if row.message.id == firstUnreadMessageId {
-                                            NewMessagePill()
-                                        }
-                                        MessageBubble(
-                                            message: row.message,
-                                            bodyText: row.bodyText,
-                                            isSystem: row.isSystem,
-                                            isOutgoing: row.isOutgoing,
-                                            avatarName: row.isOutgoing ? nil : displayOtherName,
-                                            showsAvatar: row.showAvatar,
-                                            showsTimestamp: row.showTimestamp,
-                                            isGroupedWithPrevious: row.isGroupedWithPrevious,
-                                            isGroupedWithNext: row.isGroupedWithNext,
-                                            topSpacing: row.topSpacing,
-                                            onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
-                                        )
-                                        .id(row.message.id)
-                                    }
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.top, 12)
-                            }
-                            .scrollDismissesKeyboard(.interactively)
-                            .background(Color(.systemGroupedBackground))
-                            .onChange(of: messages.count) { _, _ in
-                                if let lastId = messages.last?.id {
-                                    withAnimation {
-                                        proxy.scrollTo(lastId, anchor: .bottom)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    expandedMessagesSection
 
                     if authManager.isAuthenticated {
                         inputBar
@@ -1931,7 +1783,25 @@ struct ConversationChatSheet: View {
             }
 
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle(conversation.listingTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(isCollapsed ? .hidden : .visible, for: .navigationBar)
+        .toolbar {
+            if shouldShowListingActionsButton {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    listingActionsMenuToolbar
+                }
+            }
+            if isModalStyle {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
         .task {
             await loadMessages()
             await loadListing()
@@ -1974,7 +1844,7 @@ struct ConversationChatSheet: View {
                 )
                 .environmentObject(authManager)
                 .presentationDetents([.large], selection: $listingSheetDetent)
-                .presentationDragIndicator(.hidden)
+                .presentationDragIndicator(.visible)
             }
         }
         .sheet(isPresented: $showEditListingSheet) {
@@ -1988,7 +1858,7 @@ struct ConversationChatSheet: View {
                 )
                 .environmentObject(authManager)
                 .presentationDetents([.large])
-                .presentationDragIndicator(.hidden)
+                .presentationDragIndicator(.visible)
             }
         }
         .sheet(isPresented: $showUserReviews) {
@@ -2020,7 +1890,7 @@ struct ConversationChatSheet: View {
                 )
                 .environmentObject(authManager)
                 .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.hidden)
+                .presentationDragIndicator(.visible)
             }
         }
         .sheet(isPresented: $showReviewOwnerSheet) {
@@ -2037,7 +1907,7 @@ struct ConversationChatSheet: View {
                 }
             )
             .presentationDetents([.medium])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showReviewContractorSheet) {
             ReviewOwnerSheet(
@@ -2053,7 +1923,7 @@ struct ConversationChatSheet: View {
                 }
             )
             .presentationDetents([.medium])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStripeOnboardingExplanation) {
             StripeOnboardingSheet(
@@ -2065,7 +1935,7 @@ struct ConversationChatSheet: View {
                 }
             )
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Slett annonse", role: .destructive) {
@@ -2111,7 +1981,7 @@ struct ConversationChatSheet: View {
             }
         }
         .presentationDetents([.height(70), .large], selection: $sheetDetent)
-        .presentationDragIndicator(.hidden)
+        .presentationDragIndicator(.visible)
     }
 
     private var inputBar: some View {
@@ -2123,34 +1993,108 @@ struct ConversationChatSheet: View {
         )
     }
 
-    private var collapsedHeader: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color(.systemGray3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 5)
-                .padding(.bottom, 3)
+    @ViewBuilder
+    private var expandedListingSection: some View {
+        if let listing {
+            ListingRow(
+                listing: listing,
+                userLocation: nil,
+                isDisabled: listingStatus == "COMPLETED"
+            ) {
+                if isOwner {
+                    showEditListingSheet = true
+                } else {
+                    showListingSheet = true
+                }
+            }
 
-            HStack {
-                if !isModalStyle {
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.gray, in: Circle())
+            if shouldShowSafePaymentAction {
+                acceptActionSection
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+
+            // Vis fullfør-knappen når begge har godtatt
+            if listing.offersSafePayment == true && isOwner && listing.status == "ACCEPTED_BOTH" {
+                completePaymentButton
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+
+            // Show review buttons when listing is COMPLETED (outside of safe payment info section)
+            if shouldShowReviewOwnerButton {
+                reviewOwnerButton
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+
+            if shouldShowReviewContractorButton {
+                reviewContractorButton
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+        } else if isLoadingListing {
+            ProgressView()
+                .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var expandedMessagesSection: some View {
+        if !authManager.isAuthenticated {
+            VStack(spacing: 12) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 28))
+                    .foregroundColor(.secondary)
+                Text("Logg inn for å sende meldinger")
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(messageRows) { row in
+                            if row.message.id == firstUnreadMessageId {
+                                NewMessagePill()
+                            }
+                            MessageBubble(
+                                message: row.message,
+                                bodyText: row.bodyText,
+                                isSystem: row.isSystem,
+                                isOutgoing: row.isOutgoing,
+                                avatarName: row.isOutgoing ? nil : displayOtherName,
+                                showsAvatar: row.showAvatar,
+                                showsTimestamp: row.showTimestamp,
+                                isGroupedWithPrevious: row.isGroupedWithPrevious,
+                                isGroupedWithNext: row.isGroupedWithNext,
+                                topSpacing: row.topSpacing,
+                                onAvatarTap: row.isOutgoing ? nil : { showUserReviews = true }
+                            )
+                            .id(row.message.id)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .background(Color(.systemGroupedBackground))
+                .onChange(of: messages.count) { _, _ in
+                    if let lastId = messages.last?.id {
+                        withAnimation {
+                            proxy.scrollTo(lastId, anchor: .bottom)
+                        }
                     }
                 }
+            }
+        }
+    }
 
-                if isCollapsed {
-                    collapsedContent
-                } else {
-                    Text(conversation.listingTitle)
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                }
+    @ViewBuilder
+    private var collapsedHeader: some View {
+        if isCollapsed {
+            HStack {
+                collapsedContent
 
                 Spacer()
 
@@ -2169,7 +2113,7 @@ struct ConversationChatSheet: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 8)
+            .padding(.vertical, 8)
         }
     }
 
@@ -2289,6 +2233,74 @@ struct ConversationChatSheet: View {
         .accessibilityLabel("Flere valg")
     }
 
+    private var listingActionsButtonToolbar: some View {
+        let isCompleted = listing?.status == "COMPLETED"
+        return Menu {
+            if isSafePaymentActionEnabled || isCompleted {
+                Button("Fullfør og utbetal \(safePaymentPriceText)") {
+                    Task { await completeListingAndReview() }
+                }
+                .disabled(isCompletingListing || isCompleted)
+
+                Button("Kanseller og refunder", role: .destructive) {
+                    showCancelConfirm = true
+                }
+                .disabled(isCancelingPayment || isCompleted)
+            } else {
+                Button("Merk som utført") {
+                    Task { await completeListingAndReview() }
+                }
+                .disabled(isCompletingListing || listing?.status == "COMPLETED")
+
+                Button("Slett annonse", role: .destructive) {
+                    showDeleteConfirm = true
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle.fill")
+                .font(.title2)
+                .foregroundColor(.secondary)
+        }
+        .accessibilityLabel("Flere valg")
+    }
+
+    private var listingActionsMenuToolbar: some View {
+        let isCompleted = listing?.status == "COMPLETED"
+        return Menu {
+            if isSafePaymentActionEnabled || isCompleted {
+                Button {
+                    Task { await completeListingAndReview() }
+                } label: {
+                    Label("Fullfør og utbetal \(safePaymentPriceText)", systemImage: "checkmark.circle")
+                }
+                .disabled(isCompletingListing || isCompleted)
+
+                Button(role: .destructive) {
+                    showCancelConfirm = true
+                } label: {
+                    Label("Kanseller og refunder", systemImage: "xmark.circle")
+                }
+                .disabled(isCancelingPayment || isCompleted)
+            } else {
+                Button {
+                    Task { await completeListingAndReview() }
+                } label: {
+                    Label("Merk som utført", systemImage: "checkmark.circle")
+                }
+                .disabled(isCompletingListing || listing?.status == "COMPLETED")
+
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Slett annonse", systemImage: "trash")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
     /// Current listing status
     private var listingStatus: String {
         listing?.status ?? "INITIATED"
@@ -2382,7 +2394,7 @@ struct ConversationChatSheet: View {
                 } label: {
                     BoenklereActionButtonLabel(
                         title: "Avslå",
-                        systemImage: "xmark.circle.fill",
+                        systemImage: "xmark",
                         isLoading: isDeclining,
                         textColor: .red,
                         fillColor: Color.red.opacity(0.15)

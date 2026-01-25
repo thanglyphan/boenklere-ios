@@ -103,33 +103,35 @@ struct MainMapView: View {
                 .opacity(sheetDetent == .large ? 0 : 1)
         }
         .sheet(isPresented: .constant(true)) {
-            SearchSheet(
-                sheetDetent: $sheetDetent,
-                showProfileSheet: $showProfileSheet,
-                showAppleSignInSheet: $showAppleSignInSheet,
-                listings: $listings,
-                selectedListing: $selectedListing,
-                deepLinkConversation: $deepLinkConversation,
-                userLocation: locationManager.location,
-                onListingCreated: loadListings
-            )
+            NavigationStack {
+                SearchSheet(
+                    sheetDetent: $sheetDetent,
+                    showProfileSheet: $showProfileSheet,
+                    showAppleSignInSheet: $showAppleSignInSheet,
+                    listings: $listings,
+                    selectedListing: $selectedListing,
+                    deepLinkConversation: $deepLinkConversation,
+                    userLocation: locationManager.location,
+                    onListingCreated: loadListings
+                )
                 .environmentObject(authManager)
-                .presentationDetents([.height(70), .medium, .large], selection: $sheetDetent)
-                .presentationDragIndicator(.hidden)
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-                .interactiveDismissDisabled()
-                .sheet(isPresented: $showProfileSheet) {
+            }
+            .presentationDetents([.height(70), .medium, .large], selection: $sheetDetent)
+            .presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            .interactiveDismissDisabled()
+            .sheet(isPresented: $showProfileSheet) {
                     ProfileSheet(openMyListings: $openMyListings)
                         .environmentObject(authManager)
                         .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.hidden)
+                        .presentationDragIndicator(.visible)
                 }
                 .sheet(isPresented: $showConversationsSheet) {
                     NavigationStack {
                         ConversationsSheet()
                             .environmentObject(authManager)
                             .presentationDetents([.medium, .large])
-                            .presentationDragIndicator(.hidden)
+                            .presentationDragIndicator(.visible)
                     }
                 }
         }
@@ -824,54 +826,12 @@ struct SearchSheet: View {
         sheetDetent == .height(70)
     }
 
+    private var headerTitle: String {
+        "Fant \(listings.count) oppdrag"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Fixed header that's always visible
-            VStack(spacing: 0) {
-                // Drag indicator - Apple Maps style
-                Capsule()
-                    .fill(Color(.systemGray3))
-                    .frame(width: 36, height: 5)
-                    .padding(.top, 5)
-                    .padding(.bottom, 3)
-
-                // Header with drag text and create button
-                HStack {
-                    Text("Fant \(listings.count) oppdrag")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-
-                    Spacer()
-
-                    Button {
-                        if !authManager.isAuthenticated {
-                            showAppleSignInSheet = true
-                            return
-                        }
-                        if isCreatingListing {
-                            isCreatingListing = false
-                            withAnimation {
-                                sheetDetent = .height(70)
-                            }
-                            clearForm()
-                        } else {
-                            isCreatingListing = true
-                            withAnimation {
-                                sheetDetent = .large
-                            }
-                        }
-                    } label: {
-                        Image(systemName: isCreatingListing ? "xmark" : "plus")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(isCreatingListing ? Color.gray : Color.blue, in: Circle())
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
-
             // Content below header (only shown when expanded)
             if isCreatingListing && !isCollapsed {
                 createListingContent
@@ -882,6 +842,33 @@ struct SearchSheet: View {
             }
 
             Spacer(minLength: 0)
+        }
+        .navigationTitle(headerTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    if !authManager.isAuthenticated {
+                        showAppleSignInSheet = true
+                        return
+                    }
+                    if isCreatingListing {
+                        isCreatingListing = false
+                        withAnimation {
+                            sheetDetent = .height(70)
+                        }
+                        clearForm()
+                    } else {
+                        isCreatingListing = true
+                        withAnimation {
+                            sheetDetent = .large
+                        }
+                    }
+                } label: {
+                    Image(systemName: isCreatingListing ? "xmark" : "plus")
+                        .font(.body.weight(.semibold))
+                }
+            }
         }
         .sheet(item: $selectedListing) { listing in
             ListingDetailSheet(
@@ -957,7 +944,7 @@ struct SearchSheet: View {
                                             self.selectedImage = nil
                                             self.selectedImageData = nil
                                         } label: {
-                                            Image(systemName: "xmark.circle.fill")
+                                            Image(systemName: "xmark")
                                                 .font(.title2)
                                                 .foregroundColor(.white)
                                                 .shadow(radius: 2)
@@ -1098,7 +1085,7 @@ struct SearchSheet: View {
                                         }
                                     if !newAddressQuery.isEmpty {
                                         Button { newAddressQuery = "" } label: {
-                                            Image(systemName: "xmark.circle.fill")
+                                            Image(systemName: "xmark")
                                                 .foregroundColor(.secondary)
                                         }
                                     }
@@ -1140,7 +1127,7 @@ struct SearchSheet: View {
                                         newLatitude = nil
                                         newLongitude = nil
                                     } label: {
-                                        Image(systemName: "xmark.circle.fill")
+                                        Image(systemName: "xmark")
                                             .foregroundColor(.secondary)
                                     }
                                 }
@@ -1434,25 +1421,20 @@ struct ProfileSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                sheetHeader
-
-                ScrollView {
-                    VStack(spacing: 16) {
-                        if authManager.isAuthenticated {
-                            profileCard
-                            menuCard
-                        } else {
-                            signInCard
-                        }
+            ScrollView {
+                VStack(spacing: 16) {
+                    if authManager.isAuthenticated {
+                        profileCard
+                        menuCard
+                    } else {
+                        signInCard
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 16)
                 }
-                .frame(maxHeight: .infinity)
-
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
             }
+            .frame(maxHeight: .infinity)
             .background(
                 NavigationLink(
                     destination: MyListingsSheet(showsBackButton: true, showsCloseButton: false)
@@ -1463,7 +1445,16 @@ struct ProfileSheet: View {
                 }
                 .hidden()
             )
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle("Profil")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
         }
         .confirmationDialog("Logg ut?", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
             Button("Logg ut", role: .destructive) {
@@ -1484,7 +1475,7 @@ struct ProfileSheet: View {
                 }
             )
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStripeOnboarding) {
             if let url = onboardingUrl {
@@ -1539,37 +1530,6 @@ struct ProfileSheet: View {
             addressIsConfirmed = false
             addressLatitude = nil
             addressLongitude = nil
-        }
-    }
-
-    private var sheetHeader: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color(.systemGray3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 5)
-                .padding(.bottom, 3)
-
-            HStack {
-                Text("Profil")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-
-                Spacer()
-
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Color.gray, in: Circle())
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
         }
     }
 
@@ -2147,8 +2107,6 @@ struct MyListingsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            sheetHeader
-
             Picker("Filter", selection: $selectedFilter) {
                 Text("Pågående").tag(ListingFilter.ongoing)
                 Text("Utførte").tag(ListingFilter.completed)
@@ -2243,7 +2201,7 @@ struct MyListingsSheet: View {
                                                             .scaleEffect(0.8)
                                                             .tint(Color(red: 0.68, green: 0.07, blue: 0.07))
                                                     } else {
-                                                        Image(systemName: "xmark.circle.fill")
+                                                        Image(systemName: "xmark")
                                                     }
                                                     Text("Avslå")
                                                 }
@@ -2342,7 +2300,7 @@ struct MyListingsSheet: View {
             )
             .environmentObject(authManager)
             .presentationDetents([.large], selection: $editSheetDetent)
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .sheet(item: $selectedCompletionListing) { listing in
             CompleteListingSheet(
@@ -2359,7 +2317,7 @@ struct MyListingsSheet: View {
             )
             .environmentObject(authManager)
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
         }
         .confirmationDialog("Slett annonse?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Slett annonse", role: .destructive) {
@@ -2432,7 +2390,18 @@ struct MyListingsSheet: View {
                 PaymentSheetPresenter(paymentSheet: paymentSheet, onCompletion: handlePaymentResult)
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if showsCloseButton {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
         .task {
             await loadListings()
         }
@@ -2449,54 +2418,6 @@ struct MyListingsSheet: View {
             return listings.filter { $0.status != "COMPLETED" }
         case .completed:
             return listings.filter { $0.status == "COMPLETED" }
-        }
-    }
-
-    private var sheetHeader: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color(.systemGray3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 5)
-                .padding(.bottom, 3)
-
-            HStack {
-                if showsBackButton {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.gray, in: Circle())
-                    }
-                }
-
-                Text(title)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-
-                Spacer()
-
-                if showsCloseButton {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.gray, in: Circle())
-                    }
-                } else if showsBackButton {
-                    Color.clear
-                        .frame(width: 44, height: 44)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
         }
     }
 
@@ -2871,44 +2792,6 @@ private struct SafePaymentInfoTooltipButton: View {
     }
 }
 
-
-private struct ProfileSubpageHeader: View {
-    let title: String
-    let onBack: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color(.systemGray3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 5)
-                .padding(.bottom, 3)
-
-            HStack {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Color.gray, in: Circle())
-                }
-
-                Text(title)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-
-                Spacer()
-
-                Color.clear
-                    .frame(width: 44, height: 44)
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
-    }
-}
-
 private struct RatingsSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
@@ -2920,10 +2803,6 @@ private struct RatingsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ProfileSubpageHeader(title: "Vurderinger") {
-                dismiss()
-            }
-
             if !authManager.isAuthenticated {
                 VStack(spacing: 12) {
                     Image(systemName: "lock.fill")
@@ -2979,7 +2858,8 @@ private struct RatingsSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Vurderinger")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             await loadReviews()
         }
@@ -3201,7 +3081,7 @@ private struct ReceiptsSheet: View {
             ToolbarItem(placement: .navigationBarLeading) {
                 if isSelectionMode {
                     Button(action: { exitSelectionMode() }) {
-                        Image(systemName: "xmark.circle.fill")
+                        Image(systemName: "xmark")
                             .foregroundColor(.secondary)
                     }
                 }
@@ -3587,10 +3467,6 @@ private struct NotificationsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ProfileSubpageHeader(title: "Varslinger") {
-                dismiss()
-            }
-
             if !authManager.isAuthenticated {
                 VStack(spacing: 12) {
                     Image(systemName: "lock.fill")
@@ -3628,7 +3504,8 @@ private struct NotificationsSheet: View {
                 }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Varslinger")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             messageNotificationsEnabled = authManager.messageNotificationsEnabled
             listingNotificationsEnabled = authManager.listingNotificationsEnabled
@@ -3940,31 +3817,26 @@ private struct TermsSheet: View {
     @State private var selectedDocument: TermsDocument?
 
     var body: some View {
-        VStack(spacing: 0) {
-            ProfileSubpageHeader(title: "Vilkår") {
-                dismiss()
-            }
-
-            ScrollView {
-                VStack(spacing: 0) {
-                    termsRow(title: "Bruksvilkår", systemImage: "doc.text") {
-                        selectedDocument = .termsOfUse
-                    }
-
-                    Divider()
-                        .padding(.leading, 52)
-
-                    termsRow(title: "Personvern", systemImage: "hand.raised") {
-                        selectedDocument = .privacy
-                    }
+        ScrollView {
+            VStack(spacing: 0) {
+                termsRow(title: "Bruksvilkår", systemImage: "doc.text") {
+                    selectedDocument = .termsOfUse
                 }
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
+
+                Divider()
+                    .padding(.leading, 52)
+
+                termsRow(title: "Personvern", systemImage: "hand.raised") {
+                    selectedDocument = .privacy
+                }
             }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 20)
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Vilkår")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $selectedDocument) { document in
             TermsModal(document: document)
                 .presentationDetents([.large])
@@ -4008,11 +3880,7 @@ struct TermsModal: View {
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
-        VStack(spacing: 0) {
-            TermsModalHeader(title: document.title) {
-                dismiss()
-            }
-
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(document.headerTitle)
@@ -4034,8 +3902,17 @@ struct TermsModal: View {
                 .padding(.top, 8)
                 .padding(.bottom, 24)
             }
+            .navigationTitle(document.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
         }
-        .toolbar(.hidden, for: .navigationBar)
     }
 
     private func termsSection(title: String, bullets: [String]) -> some View {
@@ -4081,40 +3958,6 @@ struct TermsModal: View {
             Text("thang-phan@outlook.com")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
-        }
-    }
-}
-
-private struct TermsModalHeader: View {
-    let title: String
-    let onClose: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color(.systemGray3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 5)
-                .padding(.bottom, 3)
-
-            HStack {
-                Text(title)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.primary)
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Color.gray, in: Circle())
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
         }
     }
 }
@@ -4994,39 +4837,6 @@ struct ListingDetailSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    Capsule()
-                        .fill(Color(.systemGray3))
-                        .frame(width: 36, height: 5)
-                        .padding(.top, 5)
-                        .padding(.bottom, 3)
-
-                    HStack {
-                        HStack(spacing: 6) {
-                            if isSafePayment {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.subheadline)
-                                    .foregroundColor(.green)
-                            }
-                            Text(isSafePayment ? "Trygg betaling" : "Betaling på eget ansvar")
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(isSafePayment ? .primary : .secondary)
-                        }
-
-                        Spacer()
-
-                        Button(action: { dismiss() }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundColor(.white)
-                                .frame(width: 44, height: 44)
-                                .background(Color.gray, in: Circle())
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-
                 if !isCollapsed {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
@@ -5172,7 +4982,22 @@ struct ListingDetailSheet: View {
 
                 Spacer(minLength: 0)
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle(isSafePayment ? "Trygg betaling" : "Betaling på eget ansvar")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if isSafePayment {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
             .navigationDestination(isPresented: $showChat) {
                 ChatSheet(listing: listing, isModalStyle: false)
                     .environmentObject(authManager)
