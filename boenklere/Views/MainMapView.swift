@@ -1705,6 +1705,15 @@ struct ProfileSheet: View {
             Divider()
                 .padding(.leading, 52)
             menuRow(
+                title: "Kontakt oss",
+                systemImage: "envelope",
+                showsChevron: false
+            ) {
+                openContactEmail()
+            }
+            Divider()
+                .padding(.leading, 52)
+            menuRow(
                 title: "Logg ut",
                 systemImage: "rectangle.portrait.and.arrow.right",
                 tint: .red,
@@ -1864,6 +1873,15 @@ struct ProfileSheet: View {
         guard openMyListings else { return }
         openMyListings = false
         navigateToMyListings = true
+    }
+
+    private func openContactEmail() {
+        let email = "thang-phan@outlook.com"
+        let subject = "Tilbakemelding - Boenklere"
+        let encodedSubject = subject.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let url = URL(string: "mailto:\(email)?subject=\(encodedSubject)") {
+            UIApplication.shared.open(url)
+        }
     }
 
     @MainActor
@@ -2959,29 +2977,18 @@ private enum RatingsTab {
     case received
 }
 
-private enum ReceiptsTab {
-    case paid
-    case received
-}
-
 private struct ReceiptsSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
-    @State private var selectedTab: ReceiptsTab = .paid
-    @State private var paidReceipts: [APIReceipt] = []
-    @State private var receivedReceipts: [APIReceipt] = []
+    @State private var receipts: [APIReceipt] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var isSelectionMode = false
     @State private var selectedIds: Set<Int64> = []
-
-    private var currentReceipts: [APIReceipt] {
-        selectedTab == .paid ? paidReceipts : receivedReceipts
-    }
+    @State private var shareText: String?
 
     private var selectedReceiptUrls: [String] {
-        let allReceipts = paidReceipts + receivedReceipts
-        return allReceipts
+        return receipts
             .filter { selectedIds.contains($0.id) }
             .compactMap { $0.stripeReceiptUrl }
     }
@@ -2998,70 +3005,64 @@ private struct ReceiptsSheet: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                VStack(spacing: 12) {
-                    Picker("Kvitteringer", selection: $selectedTab) {
-                        Text("Betalt").tag(ReceiptsTab.paid)
-                        Text("Mottatt").tag(ReceiptsTab.received)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 6)
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ZStack(alignment: .bottom) {
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                if let errorMessage {
+                                    Text(errorMessage)
+                                        .font(.caption)
+                                        .foregroundColor(.red)
+                                }
 
-                    if isLoading {
-                        ProgressView()
-                            .padding(.top, 16)
-                    } else {
-                        ZStack(alignment: .bottom) {
-                            ScrollView {
-                                VStack(spacing: 12) {
-                                    if let errorMessage {
-                                        Text(errorMessage)
-                                            .font(.caption)
-                                            .foregroundColor(.red)
+                                if receipts.isEmpty {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "doc.text")
+                                            .font(.system(size: 48))
+                                            .foregroundColor(.secondary)
+                                        Text("Ingen kvitteringer enda")
+                                            .font(.headline)
+                                            .foregroundColor(.secondary)
+                                        Text("Når du har fullført betalinger via\nTrygg betaling, vil de vises her.")
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.center)
                                     }
-
-                                    if currentReceipts.isEmpty {
-                                        VStack(spacing: 12) {
-                                            Image(systemName: "doc.text")
-                                                .font(.system(size: 48))
-                                                .foregroundColor(.secondary)
-                                            Text("Ingen kvitteringer enda")
-                                                .font(.headline)
-                                                .foregroundColor(.secondary)
-                                            Text("Når du har fullført betalinger via\nTrygg betaling, vil de vises her.")
-                                                .font(.subheadline)
-                                                .foregroundColor(.secondary)
-                                                .multilineTextAlignment(.center)
-                                        }
-                                        .padding(.top, 40)
-                                    } else {
-                                        ForEach(currentReceipts) { receipt in
+                                    .padding(.top, 40)
+                                } else {
+                                    LazyVStack(spacing: 0) {
+                                        ForEach(Array(receipts.enumerated()), id: \.element.id) { index, receipt in
                                             ReceiptRow(
                                                 receipt: receipt,
-                                                isPaid: selectedTab == .paid,
                                                 isSelectionMode: isSelectionMode,
                                                 isSelected: selectedIds.contains(receipt.id),
                                                 onToggleSelection: { toggleSelection(receipt.id) },
                                                 onTap: { openReceipt(receipt) }
                                             )
+
+                                            if index < receipts.count - 1 {
+                                                Divider()
+                                                    .padding(.leading, 84)
+                                            }
                                         }
                                     }
                                 }
-                                .padding(.horizontal, 20)
-                                .padding(.top, 8)
-                                .padding(.bottom, isSelectionMode && !selectedIds.isEmpty ? 80 : 20)
                             }
-                            .refreshable {
-                                await loadReceipts()
-                            }
+                            .padding(.top, 8)
+                            .padding(.bottom, isSelectionMode && !selectedIds.isEmpty ? 80 : 20)
+                        }
+                        .refreshable {
+                            await loadReceipts()
+                        }
 
-                            if isSelectionMode && !selectedIds.isEmpty {
-                                shareButton
-                            }
+                        if isSelectionMode && !selectedIds.isEmpty {
+                            shareButton
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
         .navigationTitle("Kvitteringer")
@@ -3090,6 +3091,12 @@ private struct ReceiptsSheet: View {
         .task {
             await loadReceipts()
         }
+        .sheet(item: $shareText) { text in
+            ActivityViewController(activityItems: [text])
+                .onDisappear {
+                    exitSelectionMode()
+                }
+        }
     }
 
     private var shareButton: some View {
@@ -3115,7 +3122,7 @@ private struct ReceiptsSheet: View {
     }
 
     private func selectAll() {
-        selectedIds = Set(currentReceipts.map { $0.id })
+        selectedIds = Set(receipts.map { $0.id })
     }
 
     private func exitSelectionMode() {
@@ -3136,19 +3143,7 @@ private struct ReceiptsSheet: View {
         let urls = selectedReceiptUrls
         guard !urls.isEmpty else { return }
 
-        let text = "Her er dine kvitteringer:\n\n" + urls.joined(separator: "\n\n")
-
-        let activityVC = UIActivityViewController(
-            activityItems: [text],
-            applicationActivities: nil
-        )
-
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootVC = windowScene.windows.first?.rootViewController {
-            rootVC.present(activityVC, animated: true) {
-                exitSelectionMode()
-            }
-        }
+        shareText = "Her er dine kvitteringer:\n\n" + urls.joined(separator: "\n\n")
     }
 
     @MainActor
@@ -3159,13 +3154,7 @@ private struct ReceiptsSheet: View {
         errorMessage = nil
 
         do {
-            async let paid = APIService.shared.getReceipts(userId: userId, type: "paid")
-            async let received = APIService.shared.getReceipts(userId: userId, type: "received")
-
-            let (paidResult, receivedResult) = try await (paid, received)
-
-            self.paidReceipts = paidResult
-            self.receivedReceipts = receivedResult
+            self.receipts = try await APIService.shared.getReceipts(userId: userId, type: "paid")
         } catch is CancellationError {
             return
         } catch {
@@ -3178,7 +3167,6 @@ private struct ReceiptsSheet: View {
 
 private struct ReceiptRow: View {
     let receipt: APIReceipt
-    let isPaid: Bool
     let isSelectionMode: Bool
     let isSelected: Bool
     let onToggleSelection: () -> Void
@@ -3205,23 +3193,27 @@ private struct ReceiptRow: View {
                     }
                 }
 
+                // Receipt icon in circle (like listing thumbnail)
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.15))
+                        .frame(width: 56, height: 56)
+
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 22))
+                        .foregroundColor(.red)
+                }
+
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(receipt.listingTitle)
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
+                    Text(receipt.listingTitle)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
 
-                        Spacer()
-
-                        Text(formatAmount(receipt.amount, currency: receipt.currency))
-                            .font(.headline)
-                            .foregroundColor(isPaid ? .red : .green)
-                    }
-
-                    Text(isPaid ? "Til \(receipt.counterpartyName)" : "Fra \(receipt.counterpartyName)")
+                    Text("Til \(receipt.counterpartyName)")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
 
                     if let dateText = ReceiptDateFormatter.shared.format(receipt.capturedAt) {
                         Text(dateText)
@@ -3229,10 +3221,19 @@ private struct ReceiptRow: View {
                             .foregroundColor(.secondary)
                     }
                 }
+
+                Spacer()
+
+                Text(formatAmount(receipt.amount, currency: receipt.currency))
+                    .font(.headline)
+                    .foregroundColor(.red)
+
+                Image(systemName: "chevron.right")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .buttonStyle(.plain)
     }
@@ -5168,6 +5169,23 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("Location error: \(error.localizedDescription)")
     }
+}
+
+// MARK: - Activity View Controller for Share Sheet
+
+extension String: @retroactive Identifiable {
+    public var id: String { self }
+}
+
+private struct ActivityViewController: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    let applicationActivities: [UIActivity]? = nil
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: applicationActivities)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 #Preview {

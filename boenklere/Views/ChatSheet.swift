@@ -922,11 +922,13 @@ struct ConversationsSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(spacing: 12) {
+                    LazyVStack(spacing: 0) {
                         if let errorMessage {
                             Text(errorMessage)
                                 .font(.caption)
                                 .foregroundColor(.red)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 12)
                         }
 
                         if isLoading && conversations.isEmpty {
@@ -948,12 +950,15 @@ struct ConversationsSheet: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+
+                                if group.id != listingGroups.last?.id {
+                                    Divider()
+                                        .padding(.leading, 84)
+                                }
                             }
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 20)
+                    .padding(.top, 8)
                 }
                 .refreshable {
                     await loadConversations()
@@ -1134,7 +1139,7 @@ private struct ListingConversationRow: View {
             Spacer()
 
             if group.hasUnread {
-                Text("1")
+                Text("Ny")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
@@ -1142,10 +1147,13 @@ private struct ListingConversationRow: View {
                     .padding(.vertical, 4)
                     .background(Color.blue, in: Capsule())
             }
+
+            Image(systemName: "chevron.right")
+                .font(.footnote)
+                .foregroundColor(.secondary)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }
 
@@ -1159,7 +1167,7 @@ private struct ListingConversationsView: View {
         let currentUserId = authManager.userIdentifier
 
         ScrollView {
-            VStack(spacing: 12) {
+            LazyVStack(spacing: 0) {
                 ForEach(group.conversations) { conversation in
                     let otherId = currentUserId == conversation.buyerId
                         ? conversation.sellerId
@@ -1176,10 +1184,14 @@ private struct ListingConversationsView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    if conversation.id != group.conversations.last?.id {
+                        Divider()
+                            .padding(.leading, 84)
+                    }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+            .padding(.top, 8)
             .padding(.bottom, 20)
         }
         .navigationTitle(group.listingTitle)
@@ -1196,7 +1208,7 @@ private struct ListingConversationDetailRow: View {
             ZStack {
                 Circle()
                     .fill(Color.blue.opacity(0.15))
-                    .frame(width: 44, height: 44)
+                    .frame(width: 56, height: 56)
 
                 Text(initials)
                     .font(.headline)
@@ -1226,11 +1238,11 @@ private struct ListingConversationDetailRow: View {
             Spacer()
 
             if (conversation.unreadCount ?? 0) > 0 {
-                Text("Ny melding")
+                Text("Ny")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Color.blue, in: Capsule())
             }
@@ -1239,9 +1251,8 @@ private struct ListingConversationDetailRow: View {
                 .font(.footnote)
                 .foregroundColor(.secondary)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private var displayName: String {
@@ -1267,7 +1278,7 @@ private struct ListingThumbnail: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            Circle()
                 .fill(Color(.systemGray5))
 
             if let image = imageLoader.image {
@@ -1280,8 +1291,8 @@ private struct ListingThumbnail: View {
                     .foregroundColor(.secondary)
             }
         }
-        .frame(width: 64, height: 64)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(width: 56, height: 56)
+        .clipShape(Circle())
         .task {
             await imageLoader.load()
         }

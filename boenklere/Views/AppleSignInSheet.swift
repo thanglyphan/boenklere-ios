@@ -16,7 +16,7 @@ struct AppleSignInSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             Text("Logg inn i Boenklere for å få tilgang til alle funksjoner")
                 .font(.headline)
                 .multilineTextAlignment(.leading)
@@ -73,7 +73,9 @@ struct AppleSignInSheet: View {
                     .multilineTextAlignment(.leading)
             }
         }
-        .padding(24)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
@@ -85,7 +87,8 @@ struct AppleSignInSheet: View {
                 contentHeight = height
             }
         }
-        .presentationDetents(contentHeight > 0 ? [.height(contentHeight + 24)] : [.medium])
+        .presentationDetents(contentHeight > 0 ? [.height(contentHeight + 20)] : [.medium])
+        .presentationDragIndicator(.visible)
         .sheet(item: $selectedDocument) { document in
             TermsModal(document: document)
                 .presentationDetents([.large])
