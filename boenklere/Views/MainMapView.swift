@@ -43,6 +43,7 @@ struct MainMapView: View {
                                 selectedListing = listing
                             } label: {
                                 ListingMapMarker(listing: listing)
+                                    .id(listing.id)
                             }
                             .buttonStyle(.plain)
                         }
@@ -553,7 +554,12 @@ struct MainMapView: View {
 // MARK: - Listing Map Marker (Apple Maps style circular image)
 struct ListingMapMarker: View {
     let listing: APIListing
-    @State private var image: UIImage?
+    @StateObject private var imageLoader: ImageLoader
+
+    init(listing: APIListing) {
+        self.listing = listing
+        _imageLoader = StateObject(wrappedValue: ImageLoader(urlString: listing.imageUrl))
+    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -563,7 +569,7 @@ struct ListingMapMarker: View {
                     .frame(width: 50, height: 50)
                     .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
 
-                if let image {
+                if let image = imageLoader.image {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
@@ -603,7 +609,7 @@ struct ListingMapMarker: View {
             .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
         }
         .task {
-            await loadImage()
+            await imageLoader.load()
         }
     }
 
@@ -621,30 +627,6 @@ struct ListingMapMarker: View {
             return "\(Int(listing.price)) kr"
         }
         return "Ikke oppgitt"
-    }
-
-    private func loadImage() async {
-        guard let urlString = listing.imageUrl,
-              let url = URL(string: urlString) else { return }
-
-        if let cached = ImageCache.shared.image(for: urlString) {
-            await MainActor.run {
-                self.image = cached
-            }
-            return
-        }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    self.image = uiImage
-                }
-                ImageCache.shared.insert(uiImage, for: urlString)
-            }
-        } catch {
-            print("Failed to load marker image: \(error)")
-        }
     }
 }
 
@@ -676,18 +658,22 @@ struct ListingRow: View {
     let userLocation: CLLocation?
     let trailingView: AnyView?
     let onTap: () -> Void
-    @State private var image: UIImage?
+    let isDisabled: Bool
+    @StateObject private var imageLoader: ImageLoader
 
     init(
         listing: APIListing,
         userLocation: CLLocation?,
         trailingView: AnyView? = nil,
+        isDisabled: Bool = false,
         onTap: @escaping () -> Void
     ) {
         self.listing = listing
         self.userLocation = userLocation
         self.trailingView = trailingView
         self.onTap = onTap
+        self.isDisabled = isDisabled
+        _imageLoader = StateObject(wrappedValue: ImageLoader(urlString: listing.imageUrl))
     }
 
     private var isSafePayment: Bool {
@@ -696,10 +682,13 @@ struct ListingRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: onTap) {
+            Button {
+                guard !isDisabled else { return }
+                onTap()
+            } label: {
                 HStack(spacing: 12) {
                     // Round image on the left
-                    if let image {
+                    if let image = imageLoader.image {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
@@ -759,6 +748,8 @@ struct ListingRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .allowsHitTesting(!isDisabled)
+            .opacity(isDisabled ? 0.6 : 1.0)
 
             if let trailingView {
                 trailingView
@@ -767,7 +758,7 @@ struct ListingRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .task {
-            await loadImage()
+            await imageLoader.load()
         }
     }
 
@@ -794,30 +785,6 @@ struct ListingRow: View {
         let roundedKm = Int(km.rounded())
         return "\(roundedKm) km unna"
     }
-
-    private func loadImage() async {
-        guard let urlString = listing.imageUrl,
-              let url = URL(string: urlString) else { return }
-
-        if let cached = ImageCache.shared.image(for: urlString) {
-            await MainActor.run {
-                self.image = cached
-            }
-            return
-        }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    self.image = uiImage
-                }
-                ImageCache.shared.insert(uiImage, for: urlString)
-            }
-        } catch {
-            print("Failed to load row image: \(error)")
-        }
-    }
 }
 
 struct SearchSheet: View {
@@ -830,7 +797,7 @@ struct SearchSheet: View {
     @Binding var deepLinkConversation: APIConversationSummary?
     var userLocation: CLLocation?
     var onListingCreated: () async -> Void
-    @StateObject private var addressSearch = AddressSearchCompleter()
+    @StateObject private var addressSearch = KartverketAddressSearch()
     @State private var isCreatingListing = false
 
     // Create listing form fields
@@ -851,6 +818,7 @@ struct SearchSheet: View {
     @State private var detailSheetDetent: PresentationDetent = .medium
     @State private var useSavedAddress = false
     @State private var offersSafePayment = false
+    @State private var showPinSearch = false
 
     var isCollapsed: Bool {
         sheetDetent == .height(70)
@@ -959,7 +927,7 @@ struct SearchSheet: View {
                     } onCompletion: { result in
                         switch result {
                         case .success(let authorization):
-                            handleAuthorization(authorization)
+                            authManager.handleAuthorization(authorization)
                         case .failure(let error):
                             print("Sign in failed: \(error)")
                         }
@@ -1117,30 +1085,6 @@ struct SearchSheet: View {
                             }
                         }
 
-                        Toggle("Tilby Trygg betaling", isOn: $offersSafePayment)
-                            .toggleStyle(.switch)
-                            .padding(.horizontal, 4)
-
-                        if offersSafePayment {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Slik fungerer Trygg betaling")
-                                    .font(.subheadline)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(Color(red: 0.07, green: 0.34, blue: 0.68))
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    infoRow("Du betaler før oppdraget starter")
-                                    infoRow("Vi holder beløpet trygt frem til jobben er gjort")
-                                    infoRow("Oppdragstaker får pengene når du godkjenner utført arbeid")
-                                    infoRow("Platformavgift: 10 % av prisen du har satt")
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                            .background(Color(red: 0.9, green: 0.96, blue: 1.0))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        }
-
                         if !useSavedAddress {
                             // Address search
                             VStack(spacing: 0) {
@@ -1163,6 +1107,26 @@ struct SearchSheet: View {
                                 .padding(.vertical, 10)
                             }
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            
+                            // Pin search button
+                            Button {
+                                showPinSearch = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "map")
+                                        .foregroundColor(.blue)
+                                    Text("Velg på kart")
+                                        .font(.subheadline)
+                                        .foregroundColor(.blue)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            }
 
                             if !newSelectedAddress.isEmpty {
                                 HStack {
@@ -1187,27 +1151,22 @@ struct SearchSheet: View {
 
                             if showingAddressSuggestions && !addressSearch.results.isEmpty {
                                 VStack(alignment: .leading, spacing: 0) {
-                                    ForEach(addressSearch.results.prefix(5), id: \.self) { result in
+                                    ForEach(addressSearch.results.prefix(5)) { result in
                                         Button {
                                             newAddressQuery = ""
-                                            newSelectedAddress = result.title + ", " + result.subtitle
+                                            newSelectedAddress = result.displayText
+                                            newLatitude = result.latitude
+                                            newLongitude = result.longitude
                                             showingAddressSuggestions = false
-                                            Task {
-                                                await getCoordinates(for: result)
-                                            }
                                         } label: {
                                             HStack {
                                                 Image(systemName: "mappin.and.ellipse")
                                                     .foregroundColor(.secondary)
                                                     .frame(width: 24)
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text(result.title)
-                                                        .font(.subheadline)
-                                                        .foregroundColor(.primary)
-                                                    Text(result.subtitle)
-                                                        .font(.caption)
-                                                        .foregroundColor(.secondary)
-                                                }
+                                                Text(result.displayText)
+                                                    .font(.subheadline)
+                                                    .foregroundColor(.primary)
+                                                    .multilineTextAlignment(.leading)
                                                 Spacer()
                                             }
                                             .padding(.vertical, 10)
@@ -1221,6 +1180,30 @@ struct SearchSheet: View {
                                 }
                                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
+                        }
+
+                        Toggle("Tilby Trygg betaling", isOn: $offersSafePayment)
+                            .toggleStyle(.switch)
+                            .padding(.horizontal, 4)
+
+                        if offersSafePayment {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Slik fungerer Trygg betaling")
+                                    .font(.subheadline)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(Color(red: 0.07, green: 0.34, blue: 0.68))
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    infoRow("Du betaler før oppdraget starter")
+                                    infoRow("Vi holder beløpet trygt frem til jobben er gjort")
+                                    infoRow("Oppdragstaker får pengene når du godkjenner utført arbeid")
+                                    infoRow("Platformavgift: 10 % av prisen du har satt")
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color(red: 0.9, green: 0.96, blue: 1.0))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
 
                         if let error = errorMessage {
@@ -1263,6 +1246,15 @@ struct SearchSheet: View {
                         newLongitude = savedLongitude
                     }
                 }
+            }
+        }
+        .fullScreenCover(isPresented: $showPinSearch) {
+            PinSearchView { suggestion in
+                newSelectedAddress = suggestion.displayText
+                newLatitude = suggestion.latitude
+                newLongitude = suggestion.longitude
+                newAddressQuery = ""
+                showingAddressSuggestions = false
             }
         }
     }
@@ -1317,78 +1309,6 @@ struct SearchSheet: View {
         }
     }
 
-    private func handleAuthorization(_ authorization: ASAuthorization) {
-        if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
-            let userIdentifier = appleIDCredential.user
-            UserDefaults.standard.set(userIdentifier, forKey: "userIdentifier")
-            authManager.userIdentifier = userIdentifier
-
-            if let fullName = appleIDCredential.fullName {
-                let name = [fullName.givenName, fullName.familyName]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
-                if !name.isEmpty {
-                    authManager.userName = name
-                    UserDefaults.standard.set(name, forKey: "userName")
-                }
-            }
-
-            if let email = appleIDCredential.email {
-                authManager.userEmail = email
-                UserDefaults.standard.set(email, forKey: "userEmail")
-            }
-
-            authManager.isAuthenticated = true
-
-            Task {
-                do {
-                    let user = try await APIService.shared.upsertUser(
-                        userId: userIdentifier,
-                        name: authManager.userName
-                    )
-                    if let name = user.name?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !name.isEmpty {
-                        authManager.userName = name
-                        UserDefaults.standard.set(name, forKey: "userName")
-                    }
-                    authManager.userAddress = user.address
-                    authManager.userLatitude = user.latitude
-                    authManager.userLongitude = user.longitude
-                    if let enabled = user.messageNotificationsEnabled {
-                        authManager.messageNotificationsEnabled = enabled
-                    }
-                    if let enabled = user.listingNotificationsEnabled {
-                        authManager.listingNotificationsEnabled = enabled
-                    }
-                    if let radius = user.listingNotificationRadiusKm {
-                        authManager.listingNotificationRadiusKm = radius
-                    }
-                    if let address = user.address {
-                        UserDefaults.standard.set(address, forKey: "userAddress")
-                    }
-                    if let latitude = user.latitude {
-                        UserDefaults.standard.set(latitude, forKey: "userLatitude")
-                    }
-                    if let longitude = user.longitude {
-                        UserDefaults.standard.set(longitude, forKey: "userLongitude")
-                    }
-                    if let enabled = user.messageNotificationsEnabled {
-                        UserDefaults.standard.set(enabled, forKey: "messageNotificationsEnabled")
-                    }
-                    if let enabled = user.listingNotificationsEnabled {
-                        UserDefaults.standard.set(enabled, forKey: "listingNotificationsEnabled")
-                    }
-                    if let radius = user.listingNotificationRadiusKm {
-                        UserDefaults.standard.set(radius, forKey: "listingNotificationRadiusKm")
-                    }
-                    await authManager.syncDeviceTokenIfNeeded()
-                } catch {
-                    print("Failed to upsert user: \(error)")
-                }
-            }
-        }
-    }
-
     private var sortedListings: [APIListing] {
         guard let userLocation else { return listings }
 
@@ -1406,21 +1326,6 @@ struct SearchSheet: View {
         guard let lat = listing.latitude, let lon = listing.longitude else { return nil }
         let listingLocation = CLLocation(latitude: lat, longitude: lon)
         return listingLocation.distance(from: userLocation)
-    }
-
-    private func getCoordinates(for result: MKLocalSearchCompletion) async {
-        let searchRequest = MKLocalSearch.Request(completion: result)
-        let search = MKLocalSearch(request: searchRequest)
-
-        do {
-            let response = try await search.start()
-            if let item = response.mapItems.first {
-                newLatitude = item.placemark.coordinate.latitude
-                newLongitude = item.placemark.coordinate.longitude
-            }
-        } catch {
-            print("Failed to get coordinates: \(error)")
-        }
     }
 
     private func createListing() async {
@@ -1506,7 +1411,7 @@ struct ProfileSheet: View {
     @State private var isSavingName = false
     @State private var nameError: String?
     @State private var showLogoutConfirm = false
-    @StateObject private var addressSearch = AddressSearchCompleter()
+    @StateObject private var addressSearch = KartverketAddressSearch()
     @State private var addressDraft = ""
     @State private var addressError: String?
     @State private var addressLatitude: Double?
@@ -1769,20 +1674,16 @@ struct ProfileSheet: View {
 
                 if showAddressSuggestions && !addressSearch.results.isEmpty {
                     VStack(spacing: 0) {
-                        ForEach(addressSearch.results.prefix(5), id: \.self) { result in
+                        ForEach(addressSearch.results.prefix(5)) { result in
                             Button {
                                 selectAddressSuggestion(result)
                             } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "mappin.circle.fill")
                                         .foregroundColor(.blue)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(result.title)
-                                            .font(.body)
-                                        Text(result.subtitle)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
+                                    Text(result.displayText)
+                                        .font(.body)
+                                        .multilineTextAlignment(.leading)
                                     Spacer()
                                 }
                                 .padding(.vertical, 10)
@@ -1828,6 +1729,11 @@ struct ProfileSheet: View {
             }
             Divider()
                 .padding(.leading, 52)
+            menuLink(title: "Kvitteringer", systemImage: "doc.text") {
+                ReceiptsSheet()
+            }
+            Divider()
+                .padding(.leading, 52)
             menuLink(title: "Varslinger", systemImage: "bell.badge") {
                 NotificationsSheet()
             }
@@ -1864,7 +1770,8 @@ struct ProfileSheet: View {
             } onCompletion: { result in
                 switch result {
                 case .success(let authorization):
-                    handleAuthorization(authorization)
+                    authManager.handleAuthorization(authorization)
+                    dismiss()
                 case .failure(let error):
                     print("Sign in failed: \(error)")
                 }
@@ -2066,23 +1973,15 @@ struct ProfileSheet: View {
     }
 
 
-    private func selectAddressSuggestion(_ result: MKLocalSearchCompletion) {
-        let fullAddress = [result.title, result.subtitle]
-            .filter { !$0.isEmpty }
-            .joined(separator: ", ")
+    private func selectAddressSuggestion(_ result: AddressSuggestion) {
         isSelectingAddressSuggestion = true
-        addressDraft = fullAddress
+        addressDraft = result.displayText
         showAddressSuggestions = false
         addressSearch.search(query: "")
-        Task {
-            let coordinate = await getCoordinates(for: result)
-            await MainActor.run {
-                addressLatitude = coordinate?.latitude
-                addressLongitude = coordinate?.longitude
-                addressIsConfirmed = coordinate != nil
-                isSelectingAddressSuggestion = false
-            }
-        }
+        addressLatitude = result.latitude
+        addressLongitude = result.longitude
+        addressIsConfirmed = true
+        isSelectingAddressSuggestion = false
     }
 
     @MainActor
@@ -2168,86 +2067,6 @@ struct ProfileSheet: View {
         isSavingName = false
     }
 
-    private func getCoordinates(for result: MKLocalSearchCompletion) async -> CLLocationCoordinate2D? {
-        let searchRequest = MKLocalSearch.Request(completion: result)
-        let search = MKLocalSearch(request: searchRequest)
-
-        do {
-            let response = try await search.start()
-            return response.mapItems.first?.placemark.coordinate
-        } catch {
-            print("Failed to get coordinates: \(error)")
-            return nil
-        }
-    }
-    private func handleAuthorization(_ authorization: ASAuthorization) {
-        if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
-            let userIdentifier = appleIDCredential.user
-            UserDefaults.standard.set(userIdentifier, forKey: "userIdentifier")
-            authManager.userIdentifier = userIdentifier
-
-            if let fullName = appleIDCredential.fullName {
-                let name = [fullName.givenName, fullName.familyName]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
-                if !name.isEmpty {
-                    authManager.userName = name
-                    UserDefaults.standard.set(name, forKey: "userName")
-                }
-            }
-
-            if let email = appleIDCredential.email {
-                authManager.userEmail = email
-                UserDefaults.standard.set(email, forKey: "userEmail")
-            }
-
-            authManager.isAuthenticated = true
-            dismiss()
-
-            Task {
-                do {
-                    let user = try await APIService.shared.upsertUser(
-                        userId: userIdentifier,
-                        name: authManager.userName
-                    )
-                    authManager.userAddress = user.address
-                    authManager.userLatitude = user.latitude
-                    authManager.userLongitude = user.longitude
-                    if let enabled = user.messageNotificationsEnabled {
-                        authManager.messageNotificationsEnabled = enabled
-                    }
-                    if let enabled = user.listingNotificationsEnabled {
-                        authManager.listingNotificationsEnabled = enabled
-                    }
-                    if let radius = user.listingNotificationRadiusKm {
-                        authManager.listingNotificationRadiusKm = radius
-                    }
-                    if let address = user.address {
-                        UserDefaults.standard.set(address, forKey: "userAddress")
-                    }
-                    if let latitude = user.latitude {
-                        UserDefaults.standard.set(latitude, forKey: "userLatitude")
-                    }
-                    if let longitude = user.longitude {
-                        UserDefaults.standard.set(longitude, forKey: "userLongitude")
-                    }
-                    if let enabled = user.messageNotificationsEnabled {
-                        UserDefaults.standard.set(enabled, forKey: "messageNotificationsEnabled")
-                    }
-                    if let enabled = user.listingNotificationsEnabled {
-                        UserDefaults.standard.set(enabled, forKey: "listingNotificationsEnabled")
-                    }
-                    if let radius = user.listingNotificationRadiusKm {
-                        UserDefaults.standard.set(radius, forKey: "listingNotificationRadiusKm")
-                    }
-                    await authManager.syncDeviceTokenIfNeeded()
-                } catch {
-                    print("Failed to upsert user: \(error)")
-                }
-            }
-        }
-    }
-
 }
 
 private struct SafariView: UIViewControllerRepresentable {
@@ -2323,6 +2142,8 @@ struct MyListingsSheet: View {
     @State private var showAcceptConfirm = false
     @State private var pendingAcceptConversation: APIConversationSummary?
     @State private var pendingAcceptListing: APIListing?
+    @State private var showCancelConfirm = false
+    @State private var pendingCancelListing: APIListing?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2371,7 +2192,8 @@ struct MyListingsSheet: View {
                                     ListingRow(
                                         listing: listing,
                                         userLocation: nil,
-                                        trailingView: AnyView(listingActionsMenu(for: listing))
+                                        trailingView: AnyView(listingActionsMenu(for: listing)),
+                                        isDisabled: listing.status == "COMPLETED"
                                     ) {
                                         selectedListing = listing
                                     }
@@ -2585,6 +2407,26 @@ struct MyListingsSheet: View {
                 Text("Når du godtar, betaler du inn beløpet til Trygg betaling.\n\nPengene holdes trygt til jobben er godkjent.\n\nDu godtar samtidig et plattformgebyr på 10 %.\n\nHvis du ikke trykker «Fullfør» eller «Kanseller», utbetales beløpet automatisk etter 6 dager.\n\nTotalt å betale: \(totalPriceInt) kr (inkl. \(feeInt) kr i plattformgebyr)")
             }
         }
+        .alert("Kanseller oppdrag", isPresented: $showCancelConfirm) {
+            Button("Nei", role: .cancel) {
+                pendingCancelListing = nil
+            }
+            Button("Ja", role: .destructive) {
+                if let listing = pendingCancelListing {
+                    Task { await cancelSafePayment(for: listing) }
+                }
+                pendingCancelListing = nil
+            }
+        } message: {
+            if let listing = pendingCancelListing,
+               let listingId = listing.id,
+               let conversation = pendingAcceptanceByListingId[listingId] ?? safePaymentByListingId[listingId] {
+                let buyerName = buyerNamesByUserId[conversation.buyerId] ?? "oppdragstaker"
+                Text("Du er i ferd med å kansellere oppdraget med \(buyerName). Er du sikker?")
+            } else {
+                Text("Du er i ferd med å kansellere oppdraget. Er du sikker?")
+            }
+        }
         .sheet(isPresented: $showPaymentSheet) {
             if let paymentSheet {
                 PaymentSheetPresenter(paymentSheet: paymentSheet, onCompletion: handlePaymentResult)
@@ -2763,7 +2605,8 @@ struct MyListingsSheet: View {
                 .disabled(isCompleting(listing) || isCompleted)
 
                 Button("Kanseller og refunder", role: .destructive) {
-                    Task { await cancelSafePayment(for: listing) }
+                    pendingCancelListing = listing
+                    showCancelConfirm = true
                 }
                 .disabled(isCanceling(listing) || isCompleted)
             } else {
@@ -3234,6 +3077,366 @@ private struct RatingsSheet: View {
 private enum RatingsTab {
     case given
     case received
+}
+
+private enum ReceiptsTab {
+    case paid
+    case received
+}
+
+private struct ReceiptsSheet: View {
+    @EnvironmentObject var authManager: AuthenticationManager
+    @Environment(\.dismiss) var dismiss
+    @State private var selectedTab: ReceiptsTab = .paid
+    @State private var paidReceipts: [APIReceipt] = []
+    @State private var receivedReceipts: [APIReceipt] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var isSelectionMode = false
+    @State private var selectedIds: Set<Int64> = []
+
+    private var currentReceipts: [APIReceipt] {
+        selectedTab == .paid ? paidReceipts : receivedReceipts
+    }
+
+    private var selectedReceiptUrls: [String] {
+        let allReceipts = paidReceipts + receivedReceipts
+        return allReceipts
+            .filter { selectedIds.contains($0.id) }
+            .compactMap { $0.stripeReceiptUrl }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if !authManager.isAuthenticated {
+                VStack(spacing: 12) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(.secondary)
+                    Text("Logg inn for å se kvitteringer")
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 12) {
+                    Picker("Kvitteringer", selection: $selectedTab) {
+                        Text("Betalt").tag(ReceiptsTab.paid)
+                        Text("Mottatt").tag(ReceiptsTab.received)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+
+                    if isLoading {
+                        ProgressView()
+                            .padding(.top, 16)
+                    } else {
+                        ZStack(alignment: .bottom) {
+                            ScrollView {
+                                VStack(spacing: 12) {
+                                    if let errorMessage {
+                                        Text(errorMessage)
+                                            .font(.caption)
+                                            .foregroundColor(.red)
+                                    }
+
+                                    if currentReceipts.isEmpty {
+                                        VStack(spacing: 12) {
+                                            Image(systemName: "doc.text")
+                                                .font(.system(size: 48))
+                                                .foregroundColor(.secondary)
+                                            Text("Ingen kvitteringer enda")
+                                                .font(.headline)
+                                                .foregroundColor(.secondary)
+                                            Text("Når du har fullført betalinger via\nTrygg betaling, vil de vises her.")
+                                                .font(.subheadline)
+                                                .foregroundColor(.secondary)
+                                                .multilineTextAlignment(.center)
+                                        }
+                                        .padding(.top, 40)
+                                    } else {
+                                        ForEach(currentReceipts) { receipt in
+                                            ReceiptRow(
+                                                receipt: receipt,
+                                                isPaid: selectedTab == .paid,
+                                                isSelectionMode: isSelectionMode,
+                                                isSelected: selectedIds.contains(receipt.id),
+                                                onToggleSelection: { toggleSelection(receipt.id) },
+                                                onTap: { openReceipt(receipt) }
+                                            )
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 20)
+                                .padding(.top, 8)
+                                .padding(.bottom, isSelectionMode && !selectedIds.isEmpty ? 80 : 20)
+                            }
+                            .refreshable {
+                                await loadReceipts()
+                            }
+
+                            if isSelectionMode && !selectedIds.isEmpty {
+                                shareButton
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+        .navigationTitle("Kvitteringer")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if isSelectionMode {
+                    Button("Marker alle") {
+                        selectAll()
+                    }
+                } else {
+                    Button("Marker") {
+                        isSelectionMode = true
+                    }
+                }
+            }
+            ToolbarItem(placement: .navigationBarLeading) {
+                if isSelectionMode {
+                    Button(action: { exitSelectionMode() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .task {
+            await loadReceipts()
+        }
+    }
+
+    private var shareButton: some View {
+        Button(action: shareSelectedReceipts) {
+            Text("Del \(selectedIds.count) kvittering\(selectedIds.count > 1 ? "er" : "")")
+                .font(.body)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(Color.blue, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
+    }
+
+    private func toggleSelection(_ id: Int64) {
+        if selectedIds.contains(id) {
+            selectedIds.remove(id)
+        } else {
+            selectedIds.insert(id)
+        }
+    }
+
+    private func selectAll() {
+        selectedIds = Set(currentReceipts.map { $0.id })
+    }
+
+    private func exitSelectionMode() {
+        isSelectionMode = false
+        selectedIds.removeAll()
+    }
+
+    private func openReceipt(_ receipt: APIReceipt) {
+        if isSelectionMode {
+            toggleSelection(receipt.id)
+        } else if let urlString = receipt.stripeReceiptUrl,
+                  let url = URL(string: urlString) {
+            UIApplication.shared.open(url)
+        }
+    }
+
+    private func shareSelectedReceipts() {
+        let urls = selectedReceiptUrls
+        guard !urls.isEmpty else { return }
+
+        let text = "Her er dine kvitteringer:\n\n" + urls.joined(separator: "\n\n")
+
+        let activityVC = UIActivityViewController(
+            activityItems: [text],
+            applicationActivities: nil
+        )
+
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            rootVC.present(activityVC, animated: true) {
+                exitSelectionMode()
+            }
+        }
+    }
+
+    @MainActor
+    private func loadReceipts() async {
+        guard let userId = authManager.userIdentifier else { return }
+
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            async let paid = APIService.shared.getReceipts(userId: userId, type: "paid")
+            async let received = APIService.shared.getReceipts(userId: userId, type: "received")
+
+            let (paidResult, receivedResult) = try await (paid, received)
+
+            self.paidReceipts = paidResult
+            self.receivedReceipts = receivedResult
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "Kunne ikke hente kvitteringer"
+        }
+
+        isLoading = false
+    }
+}
+
+private struct ReceiptRow: View {
+    let receipt: APIReceipt
+    let isPaid: Bool
+    let isSelectionMode: Bool
+    let isSelected: Bool
+    let onToggleSelection: () -> Void
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                if isSelectionMode {
+                    ZStack {
+                        Circle()
+                            .stroke(isSelected ? Color.green : Color.gray, lineWidth: 2)
+                            .frame(width: 24, height: 24)
+
+                        if isSelected {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 24, height: 24)
+
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(receipt.listingTitle)
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        Text(formatAmount(receipt.amount, currency: receipt.currency))
+                            .font(.headline)
+                            .foregroundColor(isPaid ? .red : .green)
+                    }
+
+                    Text(isPaid ? "Til \(receipt.counterpartyName)" : "Fra \(receipt.counterpartyName)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    if let dateText = ReceiptDateFormatter.shared.format(receipt.capturedAt) {
+                        Text(dateText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func formatAmount(_ amountMinor: Int64, currency: String) -> String {
+        let amount = Double(amountMinor) / 100.0
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.locale = Locale(identifier: "nb_NO")
+        formatter.currencyCode = currency.uppercased()
+        
+        // For whole numbers, show "1 234,-" format
+        if amount.truncatingRemainder(dividingBy: 1) == 0 {
+            formatter.maximumFractionDigits = 0
+            formatter.minimumFractionDigits = 0
+            var result = formatter.string(from: NSNumber(value: amount)) ?? "\(Int(amount)) kr"
+            // Replace "kr" with ",-"
+            result = result.replacingOccurrences(of: "\\s*kr", with: ",-", options: .regularExpression)
+            return result
+        } else {
+            var result = formatter.string(from: NSNumber(value: amount)) ?? "\(amount) \(currency)"
+            return result
+        }
+    }
+}
+
+private final class ReceiptDateFormatter {
+    static let shared = ReceiptDateFormatter()
+    private let outputFormatter: DateFormatter
+    private let inputFormatters: [DateFormatter]
+
+    private init() {
+        let output = DateFormatter()
+        output.locale = Locale(identifier: "nb_NO")
+        output.timeZone = .current
+        output.dateFormat = "d. MMM yyyy"
+        outputFormatter = output
+
+        let inputWithMillis = DateFormatter()
+        inputWithMillis.locale = Locale(identifier: "en_US_POSIX")
+        inputWithMillis.timeZone = .current
+        inputWithMillis.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS"
+
+        let inputWithoutMillis = DateFormatter()
+        inputWithoutMillis.locale = Locale(identifier: "en_US_POSIX")
+        inputWithoutMillis.timeZone = .current
+        inputWithoutMillis.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+
+        inputFormatters = [inputWithMillis, inputWithoutMillis]
+    }
+
+    func format(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.replacingOccurrences(of: " ", with: "T")
+
+        var base = normalized
+        var fraction: String?
+
+        if let dotIndex = normalized.firstIndex(of: ".") {
+            base = String(normalized[..<dotIndex])
+            let afterDot = normalized[normalized.index(after: dotIndex)...]
+            let digits = afterDot.prefix { $0.isNumber }
+            if !digits.isEmpty {
+                fraction = String(digits)
+            }
+        }
+
+        var candidates: [String] = []
+        if let fraction {
+            let padded = String(fraction.prefix(3)).padding(toLength: 3, withPad: "0", startingAt: 0)
+            candidates.append("\(base).\(padded)")
+        }
+        candidates.append(base)
+
+        for candidate in candidates {
+            for formatter in inputFormatters {
+                if let date = formatter.date(from: candidate) {
+                    return outputFormatter.string(from: date)
+                }
+            }
+        }
+        return nil
+    }
 }
 
 private struct ReviewItem: Identifiable {
@@ -3939,7 +4142,7 @@ struct EditListingSheet: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
     @FocusState private var focusedField: EditListingField?
-    @StateObject private var addressSearch = AddressSearchCompleter()
+    @StateObject private var addressSearch = KartverketAddressSearch()
     @State private var titleDraft: String = ""
     @State private var descriptionDraft: String = ""
     @State private var priceDraft: String = ""
@@ -3959,6 +4162,7 @@ struct EditListingSheet: View {
     @State private var selectedImageData: Data?
     @State private var existingImage: UIImage?
     @State private var justSaved = false
+    @State private var showPinSearch = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4206,28 +4410,42 @@ struct EditListingSheet: View {
                     .padding(.vertical, 10)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .focused($focusedField, equals: .address)
+                
+                // Pin search button
+                Button {
+                    showPinSearch = true
+                } label: {
+                    HStack {
+                        Image(systemName: "map")
+                            .foregroundColor(.blue)
+                        Text("Velg på kart")
+                            .font(.subheadline)
+                            .foregroundColor(.blue)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
 
                 if !addressSearch.results.isEmpty {
                     VStack(spacing: 0) {
-                        ForEach(addressSearch.results.prefix(5), id: \.self) { result in
+                        ForEach(addressSearch.results.prefix(5)) { result in
                             Button {
-                                let fullAddress = [result.title, result.subtitle]
-                                    .filter { !$0.isEmpty }
-                                    .joined(separator: ", ")
-                                selectedAddress = fullAddress
-                                addressQuery = fullAddress
-                                Task { await getCoordinates(for: result) }
+                                selectedAddress = result.displayText
+                                addressQuery = result.displayText
+                                draftLatitude = result.latitude
+                                draftLongitude = result.longitude
                             } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "mappin.circle.fill")
                                         .foregroundColor(.blue)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(result.title)
-                                            .font(.body)
-                                        Text(result.subtitle)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
+                                    Text(result.displayText)
+                                        .font(.body)
+                                        .multilineTextAlignment(.leading)
                                     Spacer()
                                 }
                                 .padding(.vertical, 10)
@@ -4246,6 +4464,14 @@ struct EditListingSheet: View {
             } else {
                 Text(addressQuery)
                     .font(.body)
+            }
+        }
+        .fullScreenCover(isPresented: $showPinSearch) {
+            PinSearchView { suggestion in
+                selectedAddress = suggestion.displayText
+                addressQuery = suggestion.displayText
+                draftLatitude = suggestion.latitude
+                draftLongitude = suggestion.longitude
             }
         }
     }
@@ -4328,21 +4554,6 @@ struct EditListingSheet: View {
         }
 
         isSaving = false
-    }
-
-    private func getCoordinates(for result: MKLocalSearchCompletion) async {
-        let searchRequest = MKLocalSearch.Request(completion: result)
-        let search = MKLocalSearch(request: searchRequest)
-
-        do {
-            let response = try await search.start()
-            if let item = response.mapItems.first {
-                draftLatitude = item.placemark.coordinate.latitude
-                draftLongitude = item.placemark.coordinate.longitude
-            }
-        } catch {
-            print("Failed to get coordinates: \(error)")
-        }
     }
 
     private func loadExistingImage() {
@@ -4684,11 +4895,24 @@ struct ListingDetailSheet: View {
     var showsMessageAction: Bool = true
     @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
-    @State private var image: UIImage?
+    @StateObject private var imageLoader: ImageLoader
     @State private var driveTimeText: String?
     @State private var showNavigationOptions = false
     @State private var showChat = false
     @State private var showAppleSignInSheet = false
+
+    init(
+        listing: APIListing,
+        sheetDetent: Binding<PresentationDetent>,
+        userLocation: CLLocation?,
+        showsMessageAction: Bool = true
+    ) {
+        self.listing = listing
+        _sheetDetent = sheetDetent
+        self.userLocation = userLocation
+        self.showsMessageAction = showsMessageAction
+        _imageLoader = StateObject(wrappedValue: ImageLoader(urlString: listing.imageUrl))
+    }
 
     private var isCollapsed: Bool {
         sheetDetent == .height(70)
@@ -4748,7 +4972,7 @@ struct ListingDetailSheet: View {
 
     @ViewBuilder
     private var listingImageView: some View {
-        if let image {
+        if let image = imageLoader.image {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
@@ -4955,7 +5179,7 @@ struct ListingDetailSheet: View {
             }
         }
         .task {
-            await loadImage()
+            await imageLoader.load()
             await loadDriveTime()
         }
         .confirmationDialog("Åpne navigasjon", isPresented: $showNavigationOptions, titleVisibility: .visible) {
@@ -4971,29 +5195,6 @@ struct ListingDetailSheet: View {
             AppleSignInSheet()
                 .environmentObject(authManager)
                 .presentationDragIndicator(.visible)
-        }
-    }
-
-    private func loadImage() async {
-        guard let imageUrl = listing.imageUrl, let url = URL(string: imageUrl) else { return }
-
-        if let cached = ImageCache.shared.image(for: imageUrl) {
-            await MainActor.run {
-                self.image = cached
-            }
-            return
-        }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    self.image = uiImage
-                }
-                ImageCache.shared.insert(uiImage, for: imageUrl)
-            }
-        } catch {
-            print("Failed to load detail image: \(error)")
         }
     }
 
@@ -5087,28 +5288,33 @@ final class ImageCache {
     }
 }
 
-class AddressSearchCompleter: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
-    @Published var results: [MKLocalSearchCompletion] = []
-    private let completer = MKLocalSearchCompleter()
+@MainActor
+final class ImageLoader: ObservableObject {
+    @Published var image: UIImage?
+    private let urlString: String?
 
-    override init() {
-        super.init()
-        completer.delegate = self
-        completer.resultTypes = .address
+    init(urlString: String?) {
+        self.urlString = urlString
     }
 
-    func search(query: String) {
-        completer.queryFragment = query
-    }
+    func load() async {
+        guard let urlString,
+              let url = URL(string: urlString) else { return }
 
-    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
-        DispatchQueue.main.async {
-            self.results = completer.results
+        if let cached = ImageCache.shared.image(for: urlString) {
+            self.image = cached
+            return
         }
-    }
 
-    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
-        print("Address search error: \(error.localizedDescription)")
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let uiImage = UIImage(data: data) {
+                self.image = uiImage
+                ImageCache.shared.insert(uiImage, for: urlString)
+            }
+        } catch {
+            print("Failed to load image: \(error)")
+        }
     }
 }
 

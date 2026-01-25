@@ -101,6 +101,23 @@ struct APIReview: Codable {
     let createdAt: String?
 }
 
+struct APIReceipt: Codable, Identifiable {
+    let id: Int64
+    let type: String
+    let listingId: Int64
+    let listingTitle: String
+    let amount: Int64
+    let currency: String
+    let counterpartyId: String
+    let counterpartyName: String
+    let capturedAt: String?
+    let stripeReceiptUrl: String?
+}
+
+struct ExportReceiptsResponse: Codable {
+    let receiptUrls: [String]
+}
+
 private struct UpsertUserRequest: Codable {
     let userId: String
     let name: String?
@@ -579,6 +596,44 @@ class APIService {
         let apiResponse = try JSONDecoder().decode(APIResponse<[APIReview]>.self, from: data)
 
         return apiResponse.data ?? []
+    }
+
+    func getReceipts(userId: String, type: String) async throws -> [APIReceipt] {
+        var components = URLComponents(string: "\(baseURL)/api/receipts")!
+        components.queryItems = [
+            URLQueryItem(name: "userId", value: userId),
+            URLQueryItem(name: "type", value: type)
+        ]
+
+        let url = components.url!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let apiResponse = try JSONDecoder().decode(APIResponse<[APIReceipt]>.self, from: data)
+
+        return apiResponse.data ?? []
+    }
+
+    func exportReceipts(receiptIds: [Int64], email: String) async throws -> [String] {
+        let url = URL(string: "\(baseURL)/api/receipts/export")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "receiptIds": receiptIds,
+            "email": email
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.requestFailed
+        }
+
+        let apiResponse = try JSONDecoder().decode(APIResponse<ExportReceiptsResponse>.self, from: data)
+        return apiResponse.data?.receiptUrls ?? []
     }
 
     func createConversation(listingId: Int64, buyerId: String) async throws -> APIConversation {

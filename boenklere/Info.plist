@@ -4,6 +4,10 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>boenklere needs your location to show your position on the map.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>boenklere needs camera access to take photos for your listings.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>boenklere needs photo library access to select images for your listings.</string>
 	<key>CFBundleDisplayName</key>
 	<string>boenklere</string>
 	<key>API_BASE_URL</key>
@@ -18,6 +22,12 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+	</array>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Fonts/Outfit-Bold.otf</string>
 	</array>
 </dict>
 </plist>

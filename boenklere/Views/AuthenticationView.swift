@@ -30,7 +30,7 @@ struct AuthenticationView: View {
                     } onCompletion: { result in
                         switch result {
                         case .success(let authorization):
-                            handleAuthorization(authorization)
+                            authManager.handleAuthorization(authorization)
                         case .failure(let error):
                             authManager.errorMessage = error.localizedDescription
                         }
@@ -51,76 +51,6 @@ struct AuthenticationView: View {
                 
                 Spacer()
                     .frame(height: 60)
-            }
-        }
-    }
-    
-    private func handleAuthorization(_ authorization: ASAuthorization) {
-        if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
-            let userIdentifier = appleIDCredential.user
-            
-            UserDefaults.standard.set(userIdentifier, forKey: "userIdentifier")
-            
-            authManager.userIdentifier = userIdentifier
-            
-            if let fullName = appleIDCredential.fullName {
-                let name = [fullName.givenName, fullName.familyName]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
-                if !name.isEmpty {
-                    authManager.userName = name
-                    UserDefaults.standard.set(name, forKey: "userName")
-                }
-            }
-            
-            if let email = appleIDCredential.email {
-                authManager.userEmail = email
-                UserDefaults.standard.set(email, forKey: "userEmail")
-            }
-
-            authManager.isAuthenticated = true
-            authManager.errorMessage = nil
-
-            Task {
-                do {
-                    let user = try await APIService.shared.upsertUser(
-                        userId: userIdentifier,
-                        name: authManager.userName
-                    )
-                    authManager.userAddress = user.address
-                    authManager.userLatitude = user.latitude
-                    authManager.userLongitude = user.longitude
-                    if let enabled = user.messageNotificationsEnabled {
-                        authManager.messageNotificationsEnabled = enabled
-                    }
-                    if let enabled = user.listingNotificationsEnabled {
-                        authManager.listingNotificationsEnabled = enabled
-                    }
-                    if let radius = user.listingNotificationRadiusKm {
-                        authManager.listingNotificationRadiusKm = radius
-                    }
-                    if let address = user.address {
-                        UserDefaults.standard.set(address, forKey: "userAddress")
-                    }
-                    if let latitude = user.latitude {
-                        UserDefaults.standard.set(latitude, forKey: "userLatitude")
-                    }
-                    if let longitude = user.longitude {
-                        UserDefaults.standard.set(longitude, forKey: "userLongitude")
-                    }
-                    if let enabled = user.messageNotificationsEnabled {
-                        UserDefaults.standard.set(enabled, forKey: "messageNotificationsEnabled")
-                    }
-                    if let enabled = user.listingNotificationsEnabled {
-                        UserDefaults.standard.set(enabled, forKey: "listingNotificationsEnabled")
-                    }
-                    if let radius = user.listingNotificationRadiusKm {
-                        UserDefaults.standard.set(radius, forKey: "listingNotificationRadiusKm")
-                    }
-                    await authManager.syncDeviceTokenIfNeeded()
-                } catch {
-                    print("Failed to upsert user: \(error)")
-                }
             }
         }
     }

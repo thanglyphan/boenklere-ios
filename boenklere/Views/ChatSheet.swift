@@ -37,6 +37,9 @@ struct ChatSheet: View {
     @State private var showDeleteConfirm = false
     @State private var isDeletingListing = false
     @State private var showStripeOnboardingExplanation = false
+    @State private var showAcceptConfirm = false
+    @State private var showDeclineConfirm = false
+    @State private var showCancelConfirm = false
 
     var body: some View {
         ZStack {
@@ -53,7 +56,11 @@ struct ChatSheet: View {
                     dismiss()
                 }
 
-                ListingRow(listing: currentListing, userLocation: nil) {
+                ListingRow(
+                    listing: currentListing,
+                    userLocation: nil,
+                    isDisabled: listingStatus == "COMPLETED"
+                ) {
                     if isOwner {
                         showEditListingSheet = true
                     } else {
@@ -63,10 +70,6 @@ struct ChatSheet: View {
 
                 if shouldShowSafePaymentAction {
                     acceptActionSection
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                } else if shouldShowSafePaymentAcceptedInfo {
-                    acceptedInfoSection
                         .padding(.horizontal, 16)
                         .padding(.top, 12)
                 }
@@ -232,6 +235,33 @@ struct ChatSheet: View {
         } message: {
             Text("Dette kan ikke angres.")
         }
+        .alert("Er du sikker på at du vil avslå?", isPresented: $showDeclineConfirm) {
+            Button("Nei", role: .cancel) {}
+            Button("Ja", role: .destructive) {
+                Task { await declineSafePayment() }
+            }
+        }
+        .alert("Godta oppdrag med Trygg betaling", isPresented: $showAcceptConfirm) {
+            Button("Avbryt", role: .cancel) {}
+            Button("Godta") {
+                Task { await handleOwnerPaymentAction() }
+            }
+        } message: {
+            let basePrice = currentListing.price
+            let fee = basePrice * 0.10
+            let totalPrice = basePrice + fee
+            let feeInt = Int(fee)
+            let totalPriceInt = Int(totalPrice)
+            Text("Når du godtar, betaler du inn beløpet til Trygg betaling.\n\nPengene holdes trygt til jobben er godkjent.\n\nDu godtar samtidig et plattformgebyr på 10 %.\n\nHvis du ikke trykker «Fullfør» eller «Kanseller», utbetales beløpet automatisk etter 6 dager.\n\nTotalt å betale: \(totalPriceInt) kr (inkl. \(feeInt) kr i plattformgebyr)")
+        }
+        .alert("Kanseller oppdrag", isPresented: $showCancelConfirm) {
+            Button("Nei", role: .cancel) {}
+            Button("Ja", role: .destructive) {
+                Task { await cancelSafePayment() }
+            }
+        } message: {
+            Text("Du er i ferd med å kansellere oppdraget med \(executorDisplayName). Er du sikker?")
+        }
     }
 
     private var currentListing: APIListing {
@@ -298,41 +328,23 @@ struct ChatSheet: View {
     }
 
     private var isPaymentStarted: Bool {
-        // Check both listing status AND safePaymentStatus for robustness
-        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held" || safePaymentStatus == "released"
+        SafePaymentHelpers.isPaymentStarted(listingStatus: listingStatus, safePaymentStatus: safePaymentStatus)
     }
 
     private var isPaymentHeld: Bool {
-        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held"
+        SafePaymentHelpers.isPaymentHeld(listingStatus: listingStatus, safePaymentStatus: safePaymentStatus)
     }
 
     private var shouldShowSafePaymentAction: Bool {
-        guard authManager.isAuthenticated, isSafePayment else { return false }
-        guard listingStatus != "COMPLETED" else { return false }
-        
-        // Show accept button when:
-        // - Owner: contractor has accepted but owner hasn't paid yet
-        // - Contractor: hasn't accepted yet (regardless of owner status)
-        if isOwner {
-            // Owner sees accept/pay button when contractor has accepted and payment not started
-            return hasExecutorAccepted && !isPaymentStarted
-        } else {
-            // Contractor sees accept button when they haven't accepted yet
-            return !hasCurrentUserAccepted
-        }
-    }
-
-    private var shouldShowSafePaymentAcceptedInfo: Bool {
-        guard authManager.isAuthenticated, isSafePayment else { return false }
-        guard listingStatus != "COMPLETED" else { return false }
-        
-        if isOwner {
-            // Owner sees info when payment is started (held or released)
-            return isPaymentStarted
-        } else {
-            // Contractor sees info when they have accepted
-            return hasCurrentUserAccepted
-        }
+        SafePaymentHelpers.shouldShowSafePaymentAction(
+            isAuthenticated: authManager.isAuthenticated,
+            isSafePayment: isSafePayment,
+            listingStatus: listingStatus,
+            isOwner: isOwner,
+            hasExecutorAccepted: hasExecutorAccepted,
+            hasCurrentUserAccepted: hasCurrentUserAccepted,
+            isPaymentStarted: isPaymentStarted
+        )
     }
 
     private var otherUserLabel: String {
@@ -346,97 +358,49 @@ struct ChatSheet: View {
         "Godta"
     }
 
-    private var acceptActionPrimaryMessage: String {
-        if isOwner {
-            return "Når du godtar, betaler du inn beløpet til Trygg betaling. Pengene holdes trygt til jobben er godkjent."
-        }
-        return "Når du godtar, betaler oppdragsgiver inn beløpet til Trygg betaling. Du får utbetaling når jobben er godkjent."
-    }
-
-    private var acceptActionSecondaryMessage: String {
-        "Trygg betaling er en valgfri tjeneste som gir ekstra sikkerhet for begge parter. Det er helt opp til dere om dere ønsker å bruke denne når dere inngår avtale."
-    }
-
-    private var acceptActionFeeMessage: String {
-        if isOwner {
-            return "For Trygg betaling og utbetaling tar boenklere et plattformgebyr på 10 % av prisen du har satt for jobben."
-        }
-        return "Dette koster ikke noe for deg. Det er oppdragsgiver som dekker gebyret for Trygg betaling."
-    }
-
     private var acceptActionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(acceptActionPrimaryMessage)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 8) {
+            Button {
+                if isOwner {
+                    showAcceptConfirm = true
+                } else {
+                    Task { await checkOnboardingAndProceed() }
+                }
+            } label: {
+                BoenklereActionButtonLabel(
+                    title: acceptActionTitle,
+                    systemImage: "checkmark.seal.fill",
+                    isLoading: isAcceptActionDisabled && !isDeclining
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isAcceptActionDisabled)
 
-            Text(acceptActionSecondaryMessage)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(acceptActionFeeMessage)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
+            if isOwner {
                 Button {
-                    if isOwner {
-                        Task { await handleOwnerPaymentAction() }
-                    } else {
-                        Task { await checkOnboardingAndProceed() }
-                    }
+                    showDeclineConfirm = true
                 } label: {
                     BoenklereActionButtonLabel(
-                        title: acceptActionTitle,
-                        systemImage: "checkmark.seal.fill",
-                        isLoading: isAcceptActionDisabled && !isDeclining
+                        title: "Avslå",
+                        systemImage: "xmark.circle.fill",
+                        isLoading: isDeclining,
+                        textColor: .red,
+                        fillColor: Color.red.opacity(0.15)
                     )
                 }
                 .buttonStyle(.plain)
                 .disabled(isAcceptActionDisabled)
-
-                if isOwner {
-                    Button {
-                        Task { await declineSafePayment() }
-                    } label: {
-                        BoenklereActionButtonLabel(
-                            title: "Avslå",
-                            systemImage: "xmark.circle.fill",
-                            isLoading: isDeclining,
-                            textColor: .red,
-                            fillColor: Color.red.opacity(0.15)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isAcceptActionDisabled)
-                }
             }
-        }
-    }
 
-    private var acceptedInfoSection: some View {
-        safePaymentInfoBox {
-            if isPaymentStarted {
-                if isOwner {
-                    ownerSafePaymentInfoText
-                } else {
-                    executorSafePaymentInfoText
-                }
-            } else {
-                Text("Du har godtatt oppdraget, venter på godkjenning av \(ownerDisplayName)")
-            }
+            SafePaymentInfoTooltipButton(
+                text: isOwner
+                    ? "Når du godtar, betaler du inn beløpet til Trygg betaling.\nPengene holdes trygt til jobben er godkjent eller 6 dager har gått.\nPlattformgebyr: 10%."
+                    : "Når du godtar, reserveres beløpet via Trygg betaling.\nDu får utbetaling når jobben er godkjent eller automatisk etter 6 dager.\nGratis for deg."
+            )
         }
     }
 
     private var shouldShowCompletePaymentButton: Bool {
-        guard authManager.isAuthenticated, isSafePayment, isOwner else { return false }
-        guard listingStatus != "COMPLETED" else { return false }
         return true
     }
 
@@ -454,7 +418,7 @@ struct ChatSheet: View {
                 .disabled(isCompletingListing || isCompleted)
 
                 Button("Kanseller og refunder", role: .destructive) {
-                    Task { await cancelSafePayment() }
+                    showCancelConfirm = true
                 }
                 .disabled(isCancelingPayment || isCompleted)
             } else {
@@ -840,74 +804,15 @@ struct ChatSheet: View {
     }
 
     private var ownerDisplayName: String {
-        let name = currentListing.userName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? "oppdragseier" : name
+        SafePaymentHelpers.formatDisplayName(currentListing.userName, fallback: "oppdragseier")
     }
 
     private var executorDisplayName: String {
-        let name = otherUserLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "oppdragstaker" : name
-    }
-
-    private var executorSafePaymentInfoText: some View {
-        Text(
-            "Dere har begge godtatt å utføre oppdraget med Trygg betaling. Du mottar utbetaling når \(ownerDisplayName) markerer oppdraget som utført"
-        )
-    }
-
-    private var ownerSafePaymentInfoText: some View {
-        let info = ownerSafePaymentInfoAttributedString(executorName: executorDisplayName)
-        return Text(info)
-            .environment(\.openURL, OpenURLAction { url in
-                if url.scheme == "boenklere", url.host == "my-listings" {
-                    openMyListings()
-                    return .handled
-                }
-                return .systemAction
-            })
+        SafePaymentHelpers.formatDisplayName(otherUserLabel, fallback: "oppdragstaker")
     }
 
     private var safePaymentPriceText: String {
-        if let amountMinor = conversation?.safePaymentAmount {
-            let amountValue = Double(amountMinor) / 100.0
-            let formatted = amountValue.truncatingRemainder(dividingBy: 1) == 0
-                ? String(Int(amountValue))
-                : String(format: "%.2f", amountValue)
-            return "\(formatted) kr"
-        }
-        let priceValue = max(0, Int(currentListing.price))
-        return "\(priceValue) kr"
-    }
-
-    private func ownerSafePaymentInfoAttributedString(executorName: String) -> AttributedString {
-        let linkToken = "[[MY_LISTINGS]]"
-        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken). Ønsker du å kansellere, vil vi refundere pengene til din konto. Det kan du enten gjøre i Mine annonser eller trykke på knappen oppe til høyre."
-        var info = AttributedString(raw)
-        if let range = info.range(of: linkToken) {
-            var link = AttributedString("Mine annonser")
-            link.font = .caption.bold()
-            link.foregroundColor = .secondary
-            link.link = URL(string: "boenklere://my-listings")
-            info.replaceSubrange(range, with: link)
-        }
-        return info
-    }
-
-    private func safePaymentInfoBox(@ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            content()
-        }
-        .font(.caption)
-        .foregroundColor(.secondary)
-        .lineSpacing(2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func openMyListings() {
-        NotificationCenter.default.post(name: .openMyListings, object: nil)
+        SafePaymentHelpers.formatPriceText(safePaymentAmount: conversation?.safePaymentAmount, listingPrice: currentListing.price)
     }
 
     @MainActor
@@ -1394,15 +1299,18 @@ private struct ListingConversationDetailRow: View {
 }
 
 private struct ListingThumbnail: View {
-    let imageUrl: String?
-    @State private var image: UIImage?
+    @StateObject private var imageLoader: ImageLoader
+
+    init(imageUrl: String?) {
+        _imageLoader = StateObject(wrappedValue: ImageLoader(urlString: imageUrl))
+    }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(.systemGray5))
 
-            if let image {
+            if let image = imageLoader.image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -1415,31 +1323,7 @@ private struct ListingThumbnail: View {
         .frame(width: 64, height: 64)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .task {
-            await loadImage()
-        }
-    }
-
-    private func loadImage() async {
-        guard let imageUrl,
-              let url = URL(string: imageUrl) else { return }
-
-        if let cached = ImageCache.shared.image(for: imageUrl) {
-            await MainActor.run {
-                self.image = cached
-            }
-            return
-        }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    self.image = uiImage
-                }
-                ImageCache.shared.insert(uiImage, for: imageUrl)
-            }
-        } catch {
-            print("Failed to load listing thumbnail: \(error)")
+            await imageLoader.load()
         }
     }
 }
@@ -1932,6 +1816,9 @@ struct ConversationChatSheet: View {
     @State private var isDeclining = false
     @State private var showDeleteConfirm = false
     @State private var isDeletingListing = false
+    @State private var showAcceptConfirm = false
+    @State private var showDeclineConfirm = false
+    @State private var showCancelConfirm = false
 
     var body: some View {
         ZStack {
@@ -1944,7 +1831,11 @@ struct ConversationChatSheet: View {
 
                 if !isCollapsed {
                     if let listing {
-                        ListingRow(listing: listing, userLocation: nil) {
+                        ListingRow(
+                            listing: listing,
+                            userLocation: nil,
+                            isDisabled: listingStatus == "COMPLETED"
+                        ) {
                             if isOwner {
                                 showEditListingSheet = true
                             } else {
@@ -1954,10 +1845,6 @@ struct ConversationChatSheet: View {
 
                         if shouldShowSafePaymentAction {
                             acceptActionSection
-                                .padding(.horizontal, 16)
-                                .padding(.top, 12)
-                        } else if shouldShowSafePaymentAcceptedInfo {
-                            acceptedInfoSection
                                 .padding(.horizontal, 16)
                                 .padding(.top, 12)
                         }
@@ -2188,6 +2075,35 @@ struct ConversationChatSheet: View {
         } message: {
             Text("Dette kan ikke angres.")
         }
+        .alert("Er du sikker på at du vil avslå?", isPresented: $showDeclineConfirm) {
+            Button("Nei", role: .cancel) {}
+            Button("Ja", role: .destructive) {
+                Task { await declineSafePayment() }
+            }
+        }
+        .alert("Godta oppdrag med Trygg betaling", isPresented: $showAcceptConfirm) {
+            Button("Avbryt", role: .cancel) {}
+            Button("Godta") {
+                Task { await handleOwnerPaymentAction() }
+            }
+        } message: {
+            if let listing {
+                let basePrice = listing.price
+                let fee = basePrice * 0.10
+                let totalPrice = basePrice + fee
+                let feeInt = Int(fee)
+                let totalPriceInt = Int(totalPrice)
+                Text("Når du godtar, betaler du inn beløpet til Trygg betaling.\n\nPengene holdes trygt til jobben er godkjent.\n\nDu godtar samtidig et plattformgebyr på 10 %.\n\nHvis du ikke trykker «Fullfør» eller «Kanseller», utbetales beløpet automatisk etter 6 dager.\n\nTotalt å betale: \(totalPriceInt) kr (inkl. \(feeInt) kr i plattformgebyr)")
+            }
+        }
+        .alert("Kanseller oppdrag", isPresented: $showCancelConfirm) {
+            Button("Nei", role: .cancel) {}
+            Button("Ja", role: .destructive) {
+                Task { await cancelSafePayment() }
+            }
+        } message: {
+            Text("Du er i ferd med å kansellere oppdraget med \(executorDisplayName). Er du sikker?")
+        }
         .onChange(of: listing?.id) { _, _ in
             Task { 
                 await checkIfAlreadyReviewedOwner()
@@ -2349,7 +2265,7 @@ struct ConversationChatSheet: View {
                 .disabled(isCompletingListing || isCompleted)
 
                 Button("Kanseller og refunder", role: .destructive) {
-                    Task { await cancelSafePayment() }
+                    showCancelConfirm = true
                 }
                 .disabled(isCancelingPayment || isCompleted)
             } else {
@@ -2414,41 +2330,23 @@ struct ConversationChatSheet: View {
     }
 
     private var isPaymentStarted: Bool {
-        // Check both listing status AND safePaymentStatus for robustness
-        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held" || safePaymentStatus == "released"
+        SafePaymentHelpers.isPaymentStarted(listingStatus: listingStatus, safePaymentStatus: safePaymentStatus)
     }
 
     private var isPaymentHeld: Bool {
-        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held"
+        SafePaymentHelpers.isPaymentHeld(listingStatus: listingStatus, safePaymentStatus: safePaymentStatus)
     }
 
     private var shouldShowSafePaymentAction: Bool {
-        guard authManager.isAuthenticated, isSafePayment else { return false }
-        guard listingStatus != "COMPLETED" else { return false }
-        
-        // Show accept button when:
-        // - Owner: contractor has accepted but owner hasn't paid yet
-        // - Contractor: hasn't accepted yet (regardless of owner status)
-        if isOwner {
-            // Owner sees accept/pay button when contractor has accepted and payment not started
-            return hasExecutorAccepted && !isPaymentStarted
-        } else {
-            // Contractor sees accept button when they haven't accepted yet
-            return !hasCurrentUserAccepted
-        }
-    }
-
-    private var shouldShowSafePaymentAcceptedInfo: Bool {
-        guard authManager.isAuthenticated, isSafePayment else { return false }
-        guard listingStatus != "COMPLETED" else { return false }
-        
-        if isOwner {
-            // Owner sees info when payment is started (held or released)
-            return isPaymentStarted
-        } else {
-            // Contractor sees info when they have accepted
-            return hasCurrentUserAccepted
-        }
+        SafePaymentHelpers.shouldShowSafePaymentAction(
+            isAuthenticated: authManager.isAuthenticated,
+            isSafePayment: isSafePayment,
+            listingStatus: listingStatus,
+            isOwner: isOwner,
+            hasExecutorAccepted: hasExecutorAccepted,
+            hasCurrentUserAccepted: hasCurrentUserAccepted,
+            isPaymentStarted: isPaymentStarted
+        )
     }
 
     private var acceptActionTitle: String? {
@@ -2460,91 +2358,45 @@ struct ConversationChatSheet: View {
         return "Godta oppdraget for \(priceValue) kr"
     }
 
-    private var acceptActionPrimaryMessage: String {
-        if isOwner {
-            return "Når du godtar, betaler du inn beløpet til Trygg betaling. Pengene holdes trygt til jobben er godkjent."
-        }
-        return "Når du godtar, betaler oppdragsgiver inn beløpet til Trygg betaling. Du får utbetaling når jobben er godkjent."
-    }
-
-    private var acceptActionSecondaryMessage: String {
-        "Trygg betaling er en valgfri tjeneste som gir ekstra sikkerhet for begge parter. Det er helt opp til dere om dere ønsker å bruke denne når dere inngår avtale."
-    }
-
-    private var acceptActionFeeMessage: String {
-        if isOwner {
-            return "For Trygg betaling og utbetaling tar boenklere et plattformgebyr på 10 % av prisen du har satt for jobben."
-        }
-        return "Dette koster ikke noe for deg. Det er oppdragsgiver som dekker gebyret for Trygg betaling."
-    }
-
     private var acceptActionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(acceptActionPrimaryMessage)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 8) {
+            Button {
+                if isOwner {
+                    showAcceptConfirm = true
+                } else {
+                    Task { await checkOnboardingAndProceed() }
+                }
+            } label: {
+                BoenklereActionButtonLabel(
+                    title: acceptActionTitle ?? "Godta",
+                    systemImage: "checkmark.seal.fill",
+                    isLoading: (isAcceptingTask || isCheckingOnboarding || isStartingPayment) && !isDeclining
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment || isDeclining)
 
-            Text(acceptActionSecondaryMessage)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(acceptActionFeeMessage)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
+            if isOwner {
                 Button {
-                    if isOwner {
-                        Task { await handleOwnerPaymentAction() }
-                    } else {
-                        Task { await checkOnboardingAndProceed() }
-                    }
+                    showDeclineConfirm = true
                 } label: {
                     BoenklereActionButtonLabel(
-                        title: acceptActionTitle ?? "Godta",
-                        systemImage: "checkmark.seal.fill",
-                        isLoading: (isAcceptingTask || isCheckingOnboarding || isStartingPayment) && !isDeclining
+                        title: "Avslå",
+                        systemImage: "xmark.circle.fill",
+                        isLoading: isDeclining,
+                        textColor: .red,
+                        fillColor: Color.red.opacity(0.15)
                     )
                 }
                 .buttonStyle(.plain)
                 .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment || isDeclining)
-
-                if isOwner {
-                    Button {
-                        Task { await declineSafePayment() }
-                    } label: {
-                        BoenklereActionButtonLabel(
-                            title: "Avslå",
-                            systemImage: "xmark.circle.fill",
-                            isLoading: isDeclining,
-                            textColor: .red,
-                            fillColor: Color.red.opacity(0.15)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isAcceptingTask || isCheckingOnboarding || isStartingPayment || isDeclining)
-                }
             }
-        }
-    }
 
-    private var acceptedInfoSection: some View {
-        safePaymentInfoBox {
-            if isPaymentStarted {
-                if isOwner {
-                    ownerSafePaymentInfoText
-                } else {
-                    executorSafePaymentInfoText
-                }
-            } else {
-                Text("Du har godtatt oppdraget, venter på godkjenning av \(ownerDisplayName)")
-            }
+            SafePaymentInfoTooltipButton(
+                text: isOwner
+                    ? "Når du godtar, betaler du inn beløpet til Trygg betaling.\nPengene holdes trygt til jobben er godkjent eller 6 dager har gått.\nPlattformgebyr: 10%."
+                    : "Når du godtar, reserveres beløpet via Trygg betaling.\nDu får utbetaling når jobben er godkjent eller automatisk etter 6 dager.\nGratis for deg."
+            )
         }
     }
 
@@ -2631,82 +2483,19 @@ struct ConversationChatSheet: View {
     }
 
     private var ownerDisplayName: String {
-        let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "oppdragseier" : name
+        SafePaymentHelpers.formatDisplayName(displayOtherName, fallback: "oppdragseier")
     }
 
     private var executorDisplayName: String {
-        let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "oppdragstaker" : name
+        SafePaymentHelpers.formatDisplayName(displayOtherName, fallback: "oppdragstaker")
     }
     
     private var contractorDisplayName: String {
-        let name = displayOtherName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "oppdragstaker" : name
-    }
-
-    private var executorSafePaymentInfoText: some View {
-        Text(
-            "Dere har begge godtatt å utføre oppdraget med Trygg betaling. Du mottar utbetaling når \(ownerDisplayName) markerer oppdraget som utført"
-        )
-    }
-
-    private var ownerSafePaymentInfoText: some View {
-        let info = ownerSafePaymentInfoAttributedString(executorName: executorDisplayName)
-        return Text(info)
-            .environment(\.openURL, OpenURLAction { url in
-                if url.scheme == "boenklere", url.host == "my-listings" {
-                    openMyListings()
-                    return .handled
-                }
-                return .systemAction
-            })
+        SafePaymentHelpers.formatDisplayName(displayOtherName, fallback: "oppdragstaker")
     }
 
     private var safePaymentPriceText: String {
-        if let amountMinor = conversation.safePaymentAmount {
-            let amountValue = Double(amountMinor) / 100.0
-            let formatted = amountValue.truncatingRemainder(dividingBy: 1) == 0
-                ? String(Int(amountValue))
-                : String(format: "%.2f", amountValue)
-            return "\(formatted) kr"
-        }
-        if let listing {
-            let priceValue = max(0, Int(listing.price))
-            return "\(priceValue) kr"
-        }
-        return "0 kr"
-    }
-
-    private func ownerSafePaymentInfoAttributedString(executorName: String) -> AttributedString {
-        let linkToken = "[[MY_LISTINGS]]"
-        let raw = "Dere har begge godtatt å utføre oppdraget med Trygg betaling. For å utbetalt pengene til \(executorName) må du etter endt oppdrag markere oppdrag som utført i \(linkToken). Ønsker du å kansellere, vil vi refundere pengene til din konto. Det kan du enten gjøre i Mine annonser eller trykke på knappen oppe til høyre."
-        var info = AttributedString(raw)
-        if let range = info.range(of: linkToken) {
-            var link = AttributedString("Mine annonser")
-            link.font = .caption.bold()
-            link.foregroundColor = .secondary
-            link.link = URL(string: "boenklere://my-listings")
-            info.replaceSubrange(range, with: link)
-        }
-        return info
-    }
-
-    private func safePaymentInfoBox(@ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            content()
-        }
-        .font(.caption)
-        .foregroundColor(.secondary)
-        .lineSpacing(2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func openMyListings() {
-        NotificationCenter.default.post(name: .openMyListings, object: nil)
+        SafePaymentHelpers.formatPriceText(safePaymentAmount: conversation.safePaymentAmount, listingPrice: listing?.price)
     }
 
     @MainActor
@@ -3910,4 +3699,60 @@ private struct SafePaymentInfoTooltipButton: View {
             .presentationCompactAdaptation(.popover)
         }
     }
+}
+
+// MARK: - Safe Payment Helpers
+enum SafePaymentHelpers {
+    static func formatDisplayName(_ name: String?, fallback: String) -> String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    static func formatPriceText(safePaymentAmount: Int64?, listingPrice: Double?) -> String {
+        if let amountMinor = safePaymentAmount {
+            let amountValue = Double(amountMinor) / 100.0
+            let formatted = amountValue.truncatingRemainder(dividingBy: 1) == 0
+                ? String(Int(amountValue))
+                : String(format: "%.2f", amountValue)
+            return "\(formatted) kr"
+        }
+        if let price = listingPrice {
+            let priceValue = max(0, Int(price))
+            return "\(priceValue) kr"
+        }
+        return "0 kr"
+    }
+
+    static func openMyListings() {
+        NotificationCenter.default.post(name: .openMyListings, object: nil)
+    }
+
+    // MARK: - Payment Status Helpers
+    static func isPaymentStarted(listingStatus: String?, safePaymentStatus: String?) -> Bool {
+        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held" || safePaymentStatus == "released"
+    }
+
+    static func isPaymentHeld(listingStatus: String?, safePaymentStatus: String?) -> Bool {
+        listingStatus == "ACCEPTED_BOTH" || safePaymentStatus == "held"
+    }
+
+    static func shouldShowSafePaymentAction(
+        isAuthenticated: Bool,
+        isSafePayment: Bool,
+        listingStatus: String?,
+        isOwner: Bool,
+        hasExecutorAccepted: Bool,
+        hasCurrentUserAccepted: Bool,
+        isPaymentStarted: Bool
+    ) -> Bool {
+        guard isAuthenticated, isSafePayment else { return false }
+        guard listingStatus != "COMPLETED" else { return false }
+        
+        if isOwner {
+            return hasExecutorAccepted && !isPaymentStarted
+        } else {
+            return !hasCurrentUserAccepted
+        }
+    }
+
 }
